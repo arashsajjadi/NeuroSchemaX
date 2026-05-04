@@ -403,8 +403,8 @@ info = nsx.recommend_view("model.onnx")
 ```
 
 Rules (in priority order):
-- Attention layers detected → **FCNN** (LOW confidence, warning, `is_approximate=True`)
-- Recurrent layers (LSTM/GRU) detected → **FCNN** (LOW confidence, warning)
+- Attention layers detected → **block-level LeNet view** (LOW confidence, `is_approximate=True`, warning)
+- Recurrent layers (LSTM/GRU) detected → **block-level LeNet view** (LOW confidence, warning)
 - No conv layers, at least one dense layer → **FCNN** (HIGH confidence)
 - 1–3 conv layers → **LeNet** (HIGH; MEDIUM with skip/merge warning if Add/Concat present)
 - 4+ conv layers → **AlexNet** (HIGH; MEDIUM if Add/Concat skip connections present)
@@ -412,6 +412,10 @@ Rules (in priority order):
 `is_approximate` is `True` whenever `confidence` is not `"high"` or there are warnings.
 Skip connections are detected from both ONNX graph edges and explicit Add/Concat layers
 in manual specs.
+
+Note: the `family` field in `recommend_view()` reflects the semantic architecture
+family (e.g. `"fcnn"` for Transformers), not the rendering family used in the diagram.
+Transformers are rendered as `"lenet"` (rect blocks) regardless of the semantic family.
 
 ---
 
@@ -423,21 +427,31 @@ arbitrary DAGs — models that fall outside these three families are shown as
 an honest approximation of the sequential backbone, with a clear on-diagram
 warning.
 
-| Architecture | How it appears | What is preserved |
-|---|---|---|
-| ResNet / skip connections | AlexNet backbone (approximate) | Skip links in debug JSON |
-| Transformer / attention | FCNN nodes (approximate) | All layers in debug JSON |
-| LSTM / GRU | FCNN nodes (approximate) | All layers in debug JSON |
-| U-Net / encoder-decoder | AlexNet backbone (approximate) | Encoder + decoder layers in debug JSON |
-| Multi-branch / DAG | Linear sequence (approximate) | Full graph in debug JSON |
+| Architecture | How it appears | Visual fidelity | What is preserved |
+|---|---|---|---|
+| MLP / dense network | FCNN neuron columns | **Exact** | — |
+| Small CNN (≤ 3 convs) | LeNet feature maps | **Exact** | — |
+| VGG-style deep CNN | AlexNet feature maps | **Exact** | — |
+| ResNet / residual blocks | AlexNet backbone | **Approximate** | Skip links in debug JSON |
+| U-Net / encoder-decoder | AlexNet backbone | **Approximate** | Decoder branches in debug JSON |
+| Transformer / attention | Block-level sequence* | **Approximate** | All layers in debug JSON |
+| LSTM / GRU / RNN | Block-level sequence* | **Approximate** | All layers in debug JSON |
+| Object-detection head | AlexNet backbone | **Approximate** | Detection branches in debug JSON |
+
+*Transformer and recurrent architectures are shown as a sequence of labeled
+rectangular blocks (Input → Embedding → [Attention] → FeedFwd → … → Classifier),
+rendered via the LeNet rectangle renderer.  This is a block-level approximation
+of the computation sequence — it is **not** an exact Transformer diagram.
+NN-SVG has no native Transformer, U-Net, or ResNet renderer.  The label inside
+each block identifies the operation type; residual connections and attention
+relationships are not drawn.
 
 Every approximate rendering:
 - shows an amber warning badge in the HTML explaining what was simplified
 - reports `confidence: "medium"` or `"low"` and `is_approximate: true` in `recommend_view()`
 - preserves the complete layer and edge information in `export-debug-json`
 
-The approximated diagram is still readable and useful for understanding the
-layer structure.  Use the debug JSON when you need the exact graph.
+Use `export-debug-json` when you need the exact graph structure.
 
 ---
 

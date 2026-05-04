@@ -334,11 +334,91 @@ def test_transformer_debug_json_preserves_attention_layers(tmp_path: Path):
     assert "attention" in kinds, "Attention layer missing from debug JSON"
 
 
-def test_transformer_fcnn_uses_block_mapping():
-    """Transformer FCNN mapping must use small block-style units (≤ 4), not large neuron columns."""
+def test_transformer_uses_rect_block_view():
+    """Transformer spec must be routed to LENET family (rect blocks), not FCNN neuron columns."""
+    from neuroschemax.core.enums import RenderFamily
     spec = nsx.build_nnsvg_spec(_transformer_spec())
+    # Must use LeNet renderer (which draws rectangles)
+    assert spec.family == RenderFamily.LENET, (
+        f"Expected LENET for block view, got {spec.family}"
+    )
+    # All layers must be single-rect blocks (channels=1, layer_type="conv")
     for l in spec.layers:
-        assert l.units <= 4, f"Layer {l.label!r} has {l.units} units — expected block-style (≤ 4)"
+        assert l.layer_type == "conv", f"Expected rect block, got layer_type={l.layer_type!r}"
+        assert l.channels == 1, f"Expected single-channel block, got channels={l.channels}"
+
+
+def test_transformer_block_labels_are_meaningful():
+    """Transformer block labels must name the operation, not be generic."""
+    spec = nsx.build_nnsvg_spec(_transformer_spec())
+    labels = {l.label for l in spec.layers}
+    # Must include at least one attention block and at least one FFN/classifier block
+    has_attention = any("attention" in lb.lower() or "attn" in lb.lower() for lb in labels)
+    has_fwd = any(
+        w in lb.lower() for lb in labels
+        for w in ("feedfwd", "ffn", "classifier", "feed")
+    )
+    assert has_attention, f"No attention block in Transformer labels: {labels}"
+    assert has_fwd, f"No FeedFwd/Classifier block in Transformer labels: {labels}"
+
+
+def test_transformer_html_contains_block_labels(tmp_path: Path):
+    """Rendered HTML for Transformer must embed block labels in the spec JSON."""
+    out = tmp_path / "transformer.html"
+    nsx.save_network_html(out, _transformer_spec())
+    html = out.read_text()
+    # The spec JSON is embedded in the HTML; block labels appear as JSON strings
+    assert "[Attention]" in html or "Attention" in html
+    assert "FeedFwd" in html or "Classifier" in html
+
+
+def test_activation_fused_into_fcnn_label():
+    """FCNN mapper must fuse a following ReLU activation into the preceding layer label."""
+    spec_dict = {
+        "model_name": "mlp_relu",
+        "layers": [
+            {"name": "input", "kind": "input", "shape": [1, 784]},
+            {"name": "fc1",   "kind": "dense", "units": 128},
+            {"name": "relu1", "kind": "relu"},
+            {"name": "fc2",   "kind": "dense", "units": 10},
+        ],
+    }
+    spec = nsx.build_nnsvg_spec(spec_dict)
+    labels = [l.label for l in spec.layers]
+    fused = any("+ReLU" in lb or "+relu" in lb.lower() for lb in labels)
+    assert fused, f"Expected fused ReLU label, got: {labels}"
+
+
+def test_relu_not_a_separate_column_in_fcnn():
+    """After activation fusion, ReLU must not appear as its own neuron column."""
+    spec_dict = {
+        "model_name": "mlp_relu",
+        "layers": [
+            {"name": "input", "kind": "input", "shape": [1, 784]},
+            {"name": "fc1",   "kind": "dense", "units": 128},
+            {"name": "relu1", "kind": "relu"},
+            {"name": "fc2",   "kind": "dense", "units": 10},
+        ],
+    }
+    spec = nsx.build_nnsvg_spec(spec_dict)
+    # With fusion: input, fc1+ReLU, fc2  → 3 layers (or 2 if input skipped)
+    # Without fusion: input, fc1, relu1, fc2 → 4 layers
+    assert len(spec.layers) <= 3, (
+        f"Expected ≤3 layers with activation fusion, got {len(spec.layers)}: "
+        f"{[l.label for l in spec.layers]}"
+    )
+
+
+def test_title_formatted_cleanly():
+    """Title must be human-readable (no raw underscores)."""
+    spec = nsx.build_nnsvg_spec(_mlp_spec())
+    assert "_" not in spec.title, f"Underscores in title: {spec.title!r}"
+
+
+def test_title_mlp_acronym():
+    """'tiny_mlp' model name should produce 'Tiny MLP' title."""
+    spec = nsx.build_nnsvg_spec(_mlp_spec())
+    assert "MLP" in spec.title, f"Expected 'MLP' in title, got {spec.title!r}"
 
 
 def test_large_cnn_compact_renders():

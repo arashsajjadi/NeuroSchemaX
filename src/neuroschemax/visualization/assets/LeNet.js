@@ -1,6 +1,10 @@
 // NN-SVG compatible LeNet-style CNN renderer.
 // Conv/pool layers are drawn as stacked feature-map rectangles (pseudo-3D);
 // dense layers are drawn as columns of circles.
+//
+// Special case: when channels === 1, the layer is treated as an opaque
+// block (used for Transformer/block-level approximations).  The label is
+// rendered centered *inside* the rectangle instead of below it.
 (function() {
   "use strict";
 
@@ -26,7 +30,6 @@
     var edgeOpacity = spec.edgeOpacity != null ? spec.edgeOpacity : 0.35;
     var nodeScale = spec.nodeSize || 1.0;
 
-    // Centres for each layer column
     var centres = [];
     for (var i = 0; i < n; i++) {
       centres.push(marginX + layerSpacing * (i + 0.5));
@@ -42,8 +45,8 @@
       }, svg);
     }
 
-    // Cap dense columns so they do not dominate the conv/pool blocks.
     var MAX_DENSE = 10;
+    var fontSize = spec.fontSize || 11;
 
     for (var i = 0; i < n; i++) {
       var x = centres[i];
@@ -52,8 +55,7 @@
 
       if (layer.layerType === "dense") {
         var units = U.clamp(layer.units || 5, 1, MAX_DENSE);
-        // Vertically centre the dense column against the canvas midpoint.
-        var colH = availH * 0.7;   // dense columns use 70 % of height
+        var colH = availH * 0.7;
         var colTop = (h - colH) / 2;
         var r = U.clamp((colH / (units + 1)) * 0.28, 4, 12) * nodeScale;
         for (var j = 0; j < units; j++) {
@@ -63,12 +65,17 @@
             fill: color, stroke: "#333", "stroke-width": "1"
           }, svg);
         }
+        if (spec.showLabels && layer.label) {
+          U.label(svg, x, h - 20, layer.label, spec);
+        }
+
       } else {
         // Conv, pool, input — stacked pseudo-3D rectangles
         var ch = U.clamp(layer.channels || 1, 1, 8);
         var fmH = U.clamp(layer.featureMapHeight || 28, 10, 120) * nodeScale;
         var fmW = U.clamp(layer.featureMapWidth  || 28, 10, 120) * nodeScale;
         var baseY = (h - fmH) / 2;
+
         for (var c = ch - 1; c >= 0; c--) {
           var offset = c * 4;
           U.el("rect", {
@@ -79,10 +86,24 @@
             stroke: "#333", "stroke-width": "1"
           }, svg);
         }
-      }
 
-      if (spec.showLabels && layer.label) {
-        U.label(svg, x, h - 20, layer.label, spec);
+        if (spec.showLabels && layer.label) {
+          if (ch === 1) {
+            // Single-channel block (e.g. Transformer stage): label centered inside.
+            var textY = baseY + fmH / 2 + fontSize * 0.38;
+            var t = U.el("text", {
+              x: x, y: textY,
+              "text-anchor": "middle",
+              "font-size": fontSize,
+              "font-family": spec.fontFamily || "sans-serif",
+              fill: "#333", "font-weight": "600"
+            }, svg);
+            t.textContent = layer.label;
+          } else {
+            // Multi-channel stack: label below the diagram.
+            U.label(svg, x, h - 20, layer.label, spec);
+          }
+        }
       }
     }
 
