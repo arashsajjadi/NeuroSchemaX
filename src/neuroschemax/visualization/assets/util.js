@@ -39,14 +39,27 @@
     },
 
     label: function(svg, x, y, text, spec) {
+      // Render *text* as a multi-line label centred horizontally at (x, y).
+      // *y* is the baseline of the FIRST line; subsequent lines stack DOWN.
+      // Multi-line input is split on '\n'.  Each line uses a <tspan> so SVG
+      // serialisation preserves the layout when exported.
       if (!spec.showLabels || !text) return;
-      Util.el("text", {
+      var fs = spec.fontSize || 11;
+      var lines = String(text).split("\n");
+      var t = Util.el("text", {
         x: x, y: y,
         "text-anchor": "middle",
-        "font-size": (spec.fontSize || 11),
+        "font-size": fs,
         "font-family": spec.fontFamily || "sans-serif",
         fill: "#333"
-      }, svg).textContent = text;
+      }, svg);
+      for (var i = 0; i < lines.length; i++) {
+        var ts = Util.el("tspan", {
+          x: x,
+          dy: i === 0 ? 0 : (fs * 1.2)
+        }, t);
+        ts.textContent = lines[i];
+      }
     }
   };
 

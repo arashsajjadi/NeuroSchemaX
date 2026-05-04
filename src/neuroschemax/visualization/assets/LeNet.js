@@ -22,8 +22,10 @@
       return;
     }
 
+    // Tighter vertical margin so small models do not look lost on a large
+    // canvas.  Horizontal margin stays generous to keep label clearance.
     var marginX = 60;
-    var marginY = 60;
+    var marginY = 36;
     var availW = w - 2 * marginX;
     var availH = h - 2 * marginY;
     var layerSpacing = availW / Math.max(1, n);
@@ -66,7 +68,12 @@
           }, svg);
         }
         if (spec.showLabels && layer.label) {
-          U.label(svg, x, h - 20, layer.label, spec);
+          // Anchor multi-line labels close to the diagram body and stack down.
+          var nLines = layer.label.split("\n").length;
+          var lh = (spec.fontSize || 11) * 1.2;
+          var blockBottom = (h + (availH * 0.7)) / 2;
+          var labelY = Math.min(h - 6 - (nLines - 1) * lh, blockBottom + 14);
+          U.label(svg, x, labelY, layer.label, spec);
         }
 
       } else {
@@ -126,8 +133,13 @@
               }, svg).textContent = lines[li];
             }
           } else {
-            // Multi-channel stack: label below the diagram.
-            U.label(svg, x, h - 20, layer.label, spec);
+            // Multi-channel stack: anchor label close to the bottom of the
+            // feature-map stack and stack subsequent lines down.
+            var nLines2 = layer.label.split("\n").length;
+            var lh2 = (spec.fontSize || 11) * 1.2;
+            var stackBottom = baseY + fmH;
+            var labelY2 = Math.min(h - 6 - (nLines2 - 1) * lh2, stackBottom + 18);
+            U.label(svg, x, labelY2, layer.label, spec);
           }
         }
       }

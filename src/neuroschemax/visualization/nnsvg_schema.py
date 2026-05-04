@@ -65,6 +65,11 @@ class NNSVGSpec:
     model_name: str = ""
     warnings: list[str] = field(default_factory=list)
 
+    # Diagnostic mode: when True, the HTML renderer produces a structured
+    # "this cannot be rendered exactly" card instead of running an NN-SVG
+    # family.  Set by the mapper for transformer_mode="unsupported".
+    diagnostic: dict[str, Any] | None = None
+
     def to_dict(self) -> dict[str, Any]:
         """Serialise to a plain dict suitable for JSON encoding."""
         return {
@@ -86,6 +91,7 @@ class NNSVGSpec:
             "subtitle": self.subtitle,
             "modelName": self.model_name,
             "warnings": self.warnings,
+            "diagnostic": self.diagnostic,
         }
 
 

@@ -18,7 +18,7 @@
     }
 
     var marginX = 80;
-    var marginY = 60;
+    var marginY = 40;
     var availW = w - 2 * marginX;
     var availH = h - 2 * marginY;
     var layerSpacing = availW / Math.max(1, n - 1);
@@ -72,7 +72,11 @@
         }, svg);
       }
       if (spec.showLabels && layers[i].label) {
-        U.label(svg, x, h - 20, layers[i].label, spec);
+        // Anchor labels just below the column; multi-line text stacks down.
+        var nLines = layers[i].label.split("\n").length;
+        var lh = (spec.fontSize || 11) * 1.2;
+        var labelY = Math.min(h - 6 - (nLines - 1) * lh, h - 20);
+        U.label(svg, x, labelY, layers[i].label, spec);
       }
     }
 

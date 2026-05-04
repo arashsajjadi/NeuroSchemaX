@@ -32,7 +32,15 @@ and warnings.
 |---|---|---|
 | **1. Exact** | MLPs, small CNNs, sequential VGG/AlexNet-style CNNs | NN-SVG diagram with operation-aware labels |
 | **2. Architecture-aware summary** | Large CNNs, ResNet-like, U-Net-like, Transformer-like | Labeled rectangular blocks with `+skip collapsed`, `concat collapsed`, `[MH-Attn]`, `[FFN]` markers |
-| **3. Diagnostic page** | `transformer_mode="unsupported"` | A wide labeled block explaining what was detected and directing the user to the debug JSON or to `block_summary` |
+| **3. Diagnostic card (HTML)** | `transformer_mode="unsupported"` | A structured HTML card explaining why exact rendering is not possible, what components were detected, and the suggested actions (`block_summary` or debug JSON) |
+
+**Readable by default.** All modes use multi-line label wrapping on
+whitespace and `+badge` boundaries — labels are never cut mid-token with
+`…`.  The canvas grows automatically to fit long labels rather than
+clipping or overlapping.  Compact mode uses a tighter per-layer budget so
+moderately deep summaries fit on one screenshot without horizontal
+scrolling.  Full mode is intended for inspection / debugging large models;
+for screenshots, prefer the default (`auto`) or `summary` detail level.
 
 Level 2 is **approximate by construction** — the diagram itself signals
 that skip / concat / attention internals are not drawn.  Level 3 is the

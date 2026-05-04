@@ -311,7 +311,67 @@ def _effective_label_mode(cfg: RenderConfig, arch_layer_count: int) -> str:
 
 
 _AVG_CHAR_PX = 0.62   # fraction of font_size per character (conservative estimate)
-_LABEL_SLOT_FRAC = 0.78  # use ≤ 78 % of each slot's width for text
+_LABEL_SLOT_FRAC = 0.92  # use ≤ 92 % of each slot's width for text (multi-line is safe)
+
+
+def _wrap_label(text: str, max_chars: int) -> str:
+    """Wrap *text* onto multiple lines so no line exceeds *max_chars*.
+
+    Splits on whitespace and on '+' boundaries (so badge-decorated labels
+    like ``Dense 256 +ReLU +Drop 0.5`` break before each badge instead of
+    being cut mid-token).  Important tokens — ``ReLU``, ``+Drop 0.5``,
+    ``k3``, ``s2``, ``Pool ↓2``, ``1000 classes``, ``12 heads``, ``d=768``
+    — are preserved whole.
+
+    Pre-existing newlines are honoured as hard line breaks.
+    """
+    if not text or max_chars <= 0:
+        return text
+
+    out_lines: list[str] = []
+    for hard_line in text.split("\n"):
+        if len(hard_line) <= max_chars:
+            out_lines.append(hard_line)
+            continue
+        # Break before each "+" badge first (keeps "ReLU"/"Drop 0.5" intact).
+        chunks = _split_keeping_badges(hard_line)
+        # Then greedily pack chunks into lines of ≤ max_chars.
+        cur = ""
+        for chunk in chunks:
+            cand = chunk if not cur else f"{cur} {chunk}"
+            if len(cand) <= max_chars:
+                cur = cand
+            else:
+                if cur:
+                    out_lines.append(cur)
+                # Chunk itself may still be too long (no internal whitespace);
+                # in that rare case allow it to stand alone — a slightly wide
+                # line is still better than corrupting an important token.
+                cur = chunk
+        if cur:
+            out_lines.append(cur)
+    return "\n".join(out_lines)
+
+
+def _split_keeping_badges(line: str) -> list[str]:
+    """Split *line* on whitespace, but keep ``+badge`` tokens whole.
+
+    Example: ``Dense 256 +ReLU +Drop 0.5`` →
+        ``["Dense 256", "+ReLU", "+Drop 0.5"]``
+    """
+    badge_starts = [i for i, ch in enumerate(line) if ch == "+" and (i == 0 or line[i - 1] == " ")]
+    if not badge_starts:
+        return line.split()
+    parts: list[str] = []
+    head = line[: badge_starts[0]].strip()
+    if head:
+        parts.append(head)
+    for k, start in enumerate(badge_starts):
+        end = badge_starts[k + 1] if k + 1 < len(badge_starts) else len(line)
+        chunk = line[start:end].strip()
+        if chunk:
+            parts.append(chunk)
+    return parts
 
 
 def _safe_label_policy(
@@ -322,19 +382,17 @@ def _safe_label_policy(
 ) -> list[NNSVGLayerSpec]:
     """Guarantee that labels fit within their canvas slots without overlap.
 
-    Algorithm:
+    Strategy (in order):
     1. Estimate the available pixel width per layer slot.
-    2. Derive a safe character budget from that width and the font size.
-    3. If any label exceeds the budget:
-       - Truncate every label to the budget.
-       - If the budget is still very tight (< 5 chars) AND thinning is allowed,
-         also thin labels (show every other one) to further reduce clutter.
+    2. Derive a safe character budget per line.
+    3. **Wrap** any oversized label onto multiple lines on whitespace and
+       ``+badge`` boundaries — never cut mid-token with ``…``.
+    4. If wrapping cannot fit and the slot is extremely tight, hide every
+       other label (only when ``allow_thinning`` is True).
 
-    This is a post-processing safety net.  The primary defence is choosing the
-    right label_mode; this catches edge cases that slip through.
-
-    Labels for transformer block layers (ch == 1 rects) are skipped because the
-    LeNet.js renderer auto-scales font size to fit inside the rectangle.
+    Labels for ch=1 block layers (Transformer / ResNet / U-Net summaries) are
+    skipped because the LeNet.js renderer renders multi-line text inside the
+    rectangle with auto font scaling.
     """
     n = len(spec_layers)
     if n <= 1:
@@ -343,27 +401,20 @@ def _safe_label_policy(
     slot_px = max(1.0, (canvas_width - 120) / n)
     safe_label_px = slot_px * _LABEL_SLOT_FRAC
     char_px = font_size * _AVG_CHAR_PX
-    safe_chars = max(3, int(safe_label_px / char_px))
+    safe_chars = max(4, int(safe_label_px / char_px))
 
-    # Skip layers whose labels are already inside boxes (ch == 1 blocks).
-    # Those are handled by JS auto-scaling.
     def _is_box_layer(layer: NNSVGLayerSpec) -> bool:
         return layer.layer_type != "dense" and layer.channels == 1
 
-    needs_action = any(
-        len(layer.label) > safe_chars
-        for layer in spec_layers
-        if layer.label and not _is_box_layer(layer)
-    )
-    if not needs_action:
-        return spec_layers
-
-    # Step 1: truncate long labels.
+    # Step 1: wrap any label whose longest line exceeds the safe budget.
     for layer in spec_layers:
-        if layer.label and not _is_box_layer(layer) and len(layer.label) > safe_chars:
-            layer.label = _truncate(layer.label, safe_chars)
+        if not layer.label or _is_box_layer(layer):
+            continue
+        longest = max((len(line) for line in layer.label.split("\n")), default=0)
+        if longest > safe_chars:
+            layer.label = _wrap_label(layer.label, safe_chars)
 
-    # Step 2: thin if budget is very tight and thinning is permitted.
+    # Step 2: extreme-density fallback — thin every other label.
     if allow_thinning and safe_chars < 5:
         for i, layer in enumerate(spec_layers):
             if i % 2 != 0 and layer.layer_type not in ("input",) and not _is_box_layer(layer):
@@ -1131,16 +1182,49 @@ _SMALL_MODEL_WIDTH = 760
 _COMPACT_PX_PER_LAYER = 64
 
 
-def _auto_width(n_layers: int, configured_width: int, compact: bool = False) -> int:
-    """Choose a canvas width that is screenshot-friendly for the layer count.
+def _auto_width(
+    n_layers: int,
+    configured_width: int,
+    compact: bool = False,
+    spec_layers: list[NNSVGLayerSpec] | None = None,
+    font_size: int = 12,
+) -> int:
+    """Choose a canvas width that fits both the layer count and the label widths.
 
     - Compact mode uses a tighter per-layer budget so moderately deep
       summaries do not require horizontal scrolling.
-    - Otherwise we never shrink the user/theme-configured width; we only
-      grow it to keep wide models from crowding their labels.
+    - We never shrink the user/theme-configured width; we only grow.
+    - If any below-block label (multi-line, longest line) is wider than
+      its slot, expand the canvas so it fits without overlap.
     """
     px_per = _COMPACT_PX_PER_LAYER if compact else _MIN_PX_PER_LAYER
-    return max(configured_width, n_layers * px_per + 120)
+    width = max(configured_width, n_layers * px_per + 120)
+
+    if not spec_layers:
+        return width
+
+    # Estimate the longest label line (multi-line wrapping reduces this).
+    char_px = font_size * _AVG_CHAR_PX
+    longest_line_px = 0.0
+    for layer in spec_layers:
+        # Inside-box labels (ch=1) are auto-scaled by the JS renderer; skip.
+        if layer.layer_type != "dense" and layer.channels == 1:
+            continue
+        if not layer.label:
+            continue
+        for line in layer.label.split("\n"):
+            longest_line_px = max(longest_line_px, len(line) * char_px)
+    if longest_line_px <= 0:
+        return width
+
+    # Each slot needs to fit the longest line + a small gutter.
+    needed_per_slot = longest_line_px / _LABEL_SLOT_FRAC + 8
+    needed_total = int(n_layers * needed_per_slot + 120)
+    # Cap label-driven growth at ~1.5× the configured width.  Beyond that
+    # the safe-label policy wraps the label onto multiple lines instead of
+    # producing an absurdly wide canvas for a single oversized label.
+    growth_cap = int(max(configured_width, 600) * 1.5)
+    return min(growth_cap, max(width, needed_total))
 
 
 # ── Public entry point ───────────────────────────────────────────────────────
@@ -1172,10 +1256,12 @@ def map_to_nnsvg(
 
     is_transformer_block = False
     _unsupported_subtitle: str = ""
+    diagnostic_payload: dict | None = None
     if has_seq_op and config.style is None:
         if config.transformer_mode == "unsupported":
-            # Professional diagnostic block — wide enough that the multi-line
-            # explanation never overflows.  All copy is short and actionable.
+            # Build a structured diagnostic payload.  The HTML generator
+            # renders this as a styled card so layout never overflows and
+            # text stays readable at any canvas width.
             detected: list[str] = []
             if any(lay.kind == LayerKind.EMBEDDING for lay in arch.layers):
                 detected.append("Embedding")
@@ -1188,13 +1274,28 @@ def map_to_nnsvg(
             if any(lay.kind in _NORM_KINDS for lay in arch.layers):
                 detected.append("Norm")
             detected_str = ", ".join(detected) if detected else "—"
+            diagnostic_payload = {
+                "kind": "transformer_unsupported",
+                "headline": "Transformer exact rendering is not supported",
+                "body": (
+                    "NN-SVG has no native Transformer renderer. "
+                    "Q/K/V projections, individual heads, exact residual "
+                    "paths, and tensor flow cannot be drawn as a graph."
+                ),
+                "actions": [
+                    'Use transformer_mode="block_summary" for an '
+                    "approximate block-level overview.",
+                    "Inspect export-debug-json for full layer metadata "
+                    "(heads, d_model, dropout rate, norms).",
+                ],
+                "detected": detected_str,
+            }
+            # Provide a small fallback ch=1 box so any non-HTML consumer
+            # (e.g. NN-SVG JSON spec) still sees a labelled block.
             diag_label = (
-                "Transformer exact rendering\n"
-                "is not supported.\n"
-                "\n"
+                "Transformer exact rendering\nis not supported\n\n"
                 'Use transformer_mode="block_summary"\n'
-                "for an approximate overview.\n"
-                "\n"
+                "for an approximate overview.\n\n"
                 f"Detected: {detected_str}\n"
                 "Full metadata in debug JSON."
             )
@@ -1204,7 +1305,7 @@ def map_to_nnsvg(
                 channels=1,
                 feature_map_width=420,
                 feature_map_height=260,
-                color="#E8EAF6",   # light indigo — clearly different from normal diagram
+                color="#E8EAF6",
             )]
             family = RenderFamily.LENET
             _unsupported_subtitle = (
@@ -1233,14 +1334,27 @@ def map_to_nnsvg(
     # ── Auto-size canvas before label safety ──────────────────────────────
     from ..core.enums import LayoutMode
     is_compact = config.layout_mode == LayoutMode.COMPACT
-    auto_width = _auto_width(len(layers), config.width, compact=is_compact)
+    auto_width = _auto_width(
+        len(layers), config.width,
+        compact=is_compact,
+        spec_layers=layers,
+        font_size=config.font_size,
+    )
 
-    # ── Label safety: prevent overlap and clipping ────────────────────────
+    # ── Label safety: wrap or thin labels to prevent overlap ──────────────
     # Skip for transformer blocks — JS auto-scales font inside rectangles.
     # Skip thinning when the user explicitly requested full detail.
     if not is_transformer_block:
         allow_thin = config.detail_level != "full"
         layers = _safe_label_policy(layers, auto_width, config.font_size, allow_thin)
+        # Re-evaluate width after wrapping: each line is shorter now, so the
+        # canvas can stay smaller (relevant for the explicit-width path).
+        auto_width = _auto_width(
+            len(layers), config.width,
+            compact=is_compact,
+            spec_layers=layers,
+            font_size=config.font_size,
+        )
 
     # ── Subtitle ──────────────────────────────────────────────────────────
     has_approx = bool(arch.warnings) and config.approximate_mode != "allow"
@@ -1273,4 +1387,5 @@ def map_to_nnsvg(
         color_stroke=config.color_stroke,
         model_name=arch.model_name,
         warnings=warnings_for_html,
+        diagnostic=diagnostic_payload,
     )

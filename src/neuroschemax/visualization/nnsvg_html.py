@@ -41,6 +41,11 @@ def generate_html(spec: NNSVGSpec) -> str:
     - Passes the spec as a JSON object
     - Exposes ``window.__nnsvg_ready`` and ``window.__nnsvg_export_svg()``
       for headless SVG extraction
+
+    When ``spec.diagnostic`` is set the body renders a structured
+    diagnostic card instead of the SVG diagram — used by
+    ``transformer_mode="unsupported"`` so the page is professional and
+    readable instead of a tiny placeholder box.
     """
     spec_json = json.dumps(spec.to_dict(), indent=2)
     family_file = _family_js_file(spec.family)
@@ -49,6 +54,7 @@ def generate_html(spec: NNSVGSpec) -> str:
     family_js = _read_asset(family_file)
 
     title = spec.title or spec.model_name or "NN-SVG Diagram"
+    diagnostic_html = _render_diagnostic_card(spec)
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -85,6 +91,48 @@ def generate_html(spec: NNSVGSpec) -> str:
     margin-top: 2px;
     letter-spacing: 0.3px;
   }}
+  .nnsvg-diagnostic {{
+    max-width: 720px;
+    margin: 24px auto;
+    padding: 24px 28px;
+    background: #fafbff;
+    border: 1px solid #c5cae9;
+    border-left: 4px solid #5c6bc0;
+    border-radius: 8px;
+    color: #2c3038;
+    line-height: 1.55;
+  }}
+  .nnsvg-diagnostic-title {{
+    font-size: 18px;
+    font-weight: 600;
+    color: #1a237e;
+    margin-bottom: 10px;
+  }}
+  .nnsvg-diagnostic-body {{
+    font-size: 14px;
+    margin-bottom: 14px;
+  }}
+  .nnsvg-diagnostic-actions {{
+    margin: 0 0 16px 22px;
+    padding: 0;
+    font-size: 14px;
+  }}
+  .nnsvg-diagnostic-actions li {{
+    margin-bottom: 6px;
+  }}
+  .nnsvg-diagnostic-meta {{
+    font-size: 12px;
+    color: #555;
+    border-top: 1px dashed #c5cae9;
+    padding-top: 10px;
+    margin-top: 6px;
+  }}
+  .nnsvg-diagnostic-meta code {{
+    background: #eef0fb;
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 12px;
+  }}
 </style>
 </head>
 <body>
@@ -93,7 +141,8 @@ def generate_html(spec: NNSVGSpec) -> str:
 {"<div class='nnsvg-subtitle'>" + _escape_html(spec.subtitle) + "</div>" if spec.subtitle else ""}
 {_render_warnings_html(spec.warnings)}
 </div>
-<div id="diagram"></div>
+{diagnostic_html}
+<div id="diagram"{' style="display:none"' if diagnostic_html else ""}></div>
 
 <script>
 // ── NN-SVG shared utilities ──────────────────────────────────────────────────
@@ -295,3 +344,41 @@ def _render_warnings_html(warnings: list[str]) -> str:
         for w in warnings
     )
     return f"<div class='nnsvg-warnings'>{items}</div>"
+
+
+def _render_diagnostic_card(spec: NNSVGSpec) -> str:
+    """Render a structured diagnostic card when ``spec.diagnostic`` is set.
+
+    The card replaces the SVG diagram for cases where exact rendering is not
+    possible (e.g. ``transformer_mode="unsupported"``).  It is wide,
+    properly typeset, and never overflows — content scales to the container
+    rather than to a fixed-width SVG box.
+    """
+    info = spec.diagnostic
+    if not info:
+        return ""
+    headline = _escape_html(info.get("headline", "Cannot render exactly"))
+    body = _escape_html(info.get("body", ""))
+    actions = info.get("actions") or []
+    detected = _escape_html(info.get("detected", ""))
+    actions_html = "".join(
+        f"<li>{_escape_html(a)}</li>" for a in actions
+    )
+    actions_block = (
+        f"<ul class='nnsvg-diagnostic-actions'>{actions_html}</ul>"
+        if actions_html else ""
+    )
+    detected_block = (
+        f"<div class='nnsvg-diagnostic-meta'>"
+        f"Detected components: <code>{detected}</code>"
+        f"</div>"
+        if detected else ""
+    )
+    return (
+        "<div class='nnsvg-diagnostic' role='note'>"
+        f"<div class='nnsvg-diagnostic-title'>{headline}</div>"
+        f"<div class='nnsvg-diagnostic-body'>{body}</div>"
+        f"{actions_block}"
+        f"{detected_block}"
+        "</div>"
+    )

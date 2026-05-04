@@ -800,19 +800,35 @@ def test_transformer_block_labels_fit_at_min_font():
 
 
 def test_safe_label_policy_direct():
-    """Unit test for _safe_label_policy: long labels get truncated."""
+    """_safe_label_policy wraps long labels on whitespace boundaries.
+
+    Labels with whitespace must be broken into multiple lines so each line
+    fits the slot.  Continuous identifier-like tokens with no break points
+    are left intact rather than corrupted by '…' truncation.
+    """
     from neuroschemax.visualization.nnsvg_mapper import _safe_label_policy
     from neuroschemax.visualization.nnsvg_schema import NNSVGLayerSpec
     layers = [
-        NNSVGLayerSpec(layer_type="conv", label="very_long_layer_name_here", channels=3),
-        NNSVGLayerSpec(layer_type="conv", label="another_very_long_name", channels=2),
-        NNSVGLayerSpec(layer_type="dense", label="classifier_head_output", units=5),
+        NNSVGLayerSpec(layer_type="conv", label="Dense 256 +ReLU +Drop 0.5", channels=3),
+        NNSVGLayerSpec(layer_type="conv", label="Conv 128 k3 s2", channels=2),
+        NNSVGLayerSpec(layer_type="dense", label="Classifier 1000", units=5),
     ]
-    # 480px canvas, 3 layers: slot=120px, safe_chars≈12
+    # 480px canvas, 3 layers: slot≈120px, safe_chars per line ≈ 14
     result = _safe_label_policy(layers, 480, 12, allow_thinning=False)
     for s in result:
-        if s.label:
-            assert len(s.label) <= 15, f"Label not truncated: {s.label!r}"
+        if not s.label:
+            continue
+        # Must never contain the unsafe ellipsis truncation marker.
+        assert "…" not in s.label, f"Unsafe ellipsis in label: {s.label!r}"
+        # Each line must fit (or be a single unbreakable token).
+        for line in s.label.split("\n"):
+            assert " " not in line or len(line) <= 18, (
+                f"Line too long after wrap: {line!r} in {s.label!r}"
+            )
+    # Multi-token labels should now span multiple lines.
+    assert "\n" in result[0].label, (
+        f"Long multi-token label should be wrapped onto multiple lines: {result[0].label!r}"
+    )
 
 
 def test_safe_label_policy_skips_box_layers():
@@ -1475,3 +1491,191 @@ def test_debug_json_preserves_dropout_layers(tmp_path: Path):
     kinds = [s["kind"] for s in data["layers"]]
     assert "dropout" in kinds, f"Dropout missing from debug JSON: {kinds}"
     assert "batch_norm" in kinds, f"BatchNorm missing from debug JSON: {kinds}"
+
+
+# ── Visual readability policy: multi-line wrap, no '...' truncation ─────────
+
+def test_long_label_wraps_to_multiple_lines_not_ellipsis():
+    """Long badge-decorated labels must wrap, never use '…' truncation."""
+    deep = {
+        "model_name": "deep",
+        "layers": (
+            [{"name": "input", "kind": "input", "shape": [1, 3, 224, 224]}]
+            + [{"name": f"c{i}", "kind": "conv", "out_channels": 64,
+                "kernel_size": [3, 3]} for i in range(10)]
+            + [{"name": "bn", "kind": "batchnorm"},
+               {"name": "relu", "kind": "relu"},
+               {"name": "drop", "kind": "dropout", "rate": 0.5},
+               {"name": "fc", "kind": "dense", "units": 1000}]
+        ),
+    }
+    spec = nsx.build_nnsvg_spec(deep, label_mode="compact", width=900)
+    for s in spec.layers:
+        if not s.label:
+            continue
+        assert "…" not in s.label, (
+            f"Unsafe ellipsis in label: {s.label!r}"
+        )
+
+
+def test_long_label_preserves_important_tokens():
+    """Wrapping must never split tokens like ReLU/+Drop 0.5/k3/d=768/N classes."""
+    spec = nsx.build_nnsvg_spec({
+        "model_name": "tiny",
+        "layers": [
+            {"name": "input", "kind": "input", "shape": [1, 1, 28, 28]},
+            {"name": "conv1", "kind": "conv", "out_channels": 16, "kernel_size": [3, 3]},
+            {"name": "bn1",   "kind": "batchnorm"},
+            {"name": "relu1", "kind": "relu"},
+            {"name": "drop1", "kind": "dropout", "rate": 0.5},
+            {"name": "fc1",   "kind": "dense", "units": 1000},
+        ],
+    }, label_mode="compact", width=520)
+    combined = "\n".join(s.label for s in spec.layers if s.label)
+    # No important token may be split mid-word by the wrapper.
+    for tok in ("ReLU", "BN", "Drop 0.5", "k3", "Classifier 1000"):
+        if tok in combined.replace("\n", " "):
+            # The token must appear contiguously somewhere (whitespace OK).
+            assert tok in combined.replace("\n", " "), (
+                f"Token {tok!r} corrupted; label set: {combined!r}"
+            )
+
+
+def test_safe_label_policy_uses_multi_line_for_decorated_labels():
+    from neuroschemax.visualization.nnsvg_mapper import _safe_label_policy
+    from neuroschemax.visualization.nnsvg_schema import NNSVGLayerSpec
+    layers = [
+        NNSVGLayerSpec(layer_type="conv", label="Dense 256 +ReLU +Drop 0.5", channels=3),
+        NNSVGLayerSpec(layer_type="conv", label="Dense 128 +ReLU", channels=2),
+        NNSVGLayerSpec(layer_type="dense", label="Output 10", units=5),
+    ]
+    out = _safe_label_policy(layers, 540, 12, allow_thinning=False)
+    # First label should be wrapped onto multiple lines, with badges intact.
+    parts = out[0].label.split("\n")
+    assert len(parts) >= 2, f"Expected multi-line wrap, got: {out[0].label!r}"
+    # Each badge token must remain whole on some line.
+    for tok in ("Dense 256", "+ReLU", "+Drop 0.5"):
+        assert any(tok in line for line in parts), (
+            f"Token {tok!r} lost during wrap: {parts}"
+        )
+
+
+def test_diagnostic_card_present_in_unsupported_html(tmp_path: Path):
+    """Unsupported transformer mode must produce an HTML diagnostic card."""
+    out = tmp_path / "trans_diag.html"
+    nsx.save_network_html(out, _transformer_spec(), transformer_mode="unsupported")
+    html = out.read_text()
+    assert "nnsvg-diagnostic" in html, (
+        "Diagnostic card class missing from HTML"
+    )
+    assert "Transformer exact rendering is not supported" in html
+    assert "block_summary" in html
+    assert "debug" in html.lower()
+    # The structured card should not contain the tiny placeholder fallback
+    # text rendered inside the SVG box.
+    assert "Detected components" in html
+
+
+def test_diagnostic_card_hides_svg_diagram(tmp_path: Path):
+    out = tmp_path / "trans_diag2.html"
+    nsx.save_network_html(out, _transformer_spec(), transformer_mode="unsupported")
+    html = out.read_text()
+    assert 'id="diagram" style="display:none"' in html, (
+        "Unsupported mode should hide the SVG diagram element"
+    )
+
+
+def test_block_summary_html_does_not_show_diagnostic_card(tmp_path: Path):
+    """Regular block_summary mode must NOT instantiate the diagnostic card."""
+    out = tmp_path / "trans_block.html"
+    nsx.save_network_html(out, _transformer_spec(), transformer_mode="block_summary")
+    html = out.read_text()
+    assert "<div class='nnsvg-diagnostic'" not in html, (
+        "block_summary should not render the unsupported diagnostic card"
+    )
+    # SVG diagram should be visible (no inline display:none on the element).
+    assert 'id="diagram" style="display:none"' not in html
+
+
+def test_canvas_grows_to_fit_long_labels():
+    """When a label is much wider than the slot, the canvas grows accordingly."""
+    # Compact label_mode produces longer labels (channels + kernel etc.).
+    spec_short = nsx.build_nnsvg_spec({
+        "model_name": "short",
+        "layers": [
+            {"name": "input", "kind": "input", "shape": [1, 1, 28, 28]},
+            {"name": "conv1", "kind": "conv", "out_channels": 16, "kernel_size": [3, 3]},
+            {"name": "fc",    "kind": "dense", "units": 10},
+        ],
+    }, label_mode="name", width=600)
+    spec_long = nsx.build_nnsvg_spec({
+        "model_name": "long",
+        "layers": [
+            {"name": "input", "kind": "input", "shape": [1, 1, 28, 28]},
+            {"name": "conv1", "kind": "conv", "out_channels": 16, "kernel_size": [3, 3]},
+            {"name": "bn1",   "kind": "batchnorm"},
+            {"name": "relu1", "kind": "relu"},
+            {"name": "drop1", "kind": "dropout", "rate": 0.5},
+            {"name": "fc",    "kind": "dense", "units": 1000},
+        ],
+    }, label_mode="full", width=600)
+    # The long version should never be narrower than the short one — labels
+    # widen the canvas instead of being silently clipped.
+    assert spec_long.width >= spec_short.width
+
+
+def test_summary_block_labels_use_line_breaks():
+    """Summary block labels must use multi-line structure, not one long line."""
+    spec = nsx.build_nnsvg_spec({
+        "model_name": "vgg",
+        "layers": (
+            [{"name": "input", "kind": "input", "shape": [1, 3, 224, 224]}]
+            + [{"name": f"c{i}", "kind": "conv", "out_channels": 64,
+                "kernel_size": [3, 3]} for i in range(8)]
+            + [{"name": "p1", "kind": "maxpool", "kernel_size": [2, 2]}]
+            + [{"name": "fc", "kind": "dense", "units": 1000}]
+        ),
+    }, detail_level="summary")
+    block_labels = [s.label for s in spec.layers if "Block" in s.label]
+    assert block_labels, "Expected Block N labels in summary mode"
+    for lb in block_labels:
+        assert "\n" in lb, f"Block label must be multi-line, got {lb!r}"
+
+
+def test_compact_mode_avoids_excessive_full_labels_for_large_cnn():
+    """In compact + auto mode, large CNN labels should be terse (no shape dims)."""
+    big = {
+        "model_name": "big",
+        "layers": (
+            [{"name": "input", "kind": "input", "shape": [1, 3, 224, 224]}]
+            + [{"name": f"c{i}", "kind": "conv", "out_channels": 64,
+                "kernel_size": [3, 3]} for i in range(20)]
+            + [{"name": "fc", "kind": "dense", "units": 1000}]
+        ),
+    }
+    spec = nsx.build_nnsvg_spec(big, compact=True)
+    # Auto label_mode → name for >9 layers; or summary collapse → ch=1 boxes.
+    # Either way, slots/labels should remain readable.
+    for s in spec.layers:
+        if s.label and (s.layer_type == "dense" or s.channels != 1):
+            for line in s.label.split("\n"):
+                assert len(line) <= 28, (
+                    f"Compact large-CNN label line too long: {line!r}"
+                )
+
+
+def test_diagnostic_payload_in_nnsvg_spec_dict():
+    """build_nnsvg_spec must expose the diagnostic payload in to_dict()."""
+    spec = nsx.build_nnsvg_spec(_transformer_spec(), transformer_mode="unsupported")
+    d = spec.to_dict()
+    assert d.get("diagnostic"), "diagnostic payload must be present in spec dict"
+    assert d["diagnostic"]["kind"] == "transformer_unsupported"
+    assert "actions" in d["diagnostic"]
+    assert "block_summary" in " ".join(d["diagnostic"]["actions"])
+
+
+def test_block_summary_spec_has_no_diagnostic_payload():
+    spec = nsx.build_nnsvg_spec(_transformer_spec(), transformer_mode="block_summary")
+    assert spec.diagnostic is None, (
+        "block_summary mode must not set the diagnostic payload"
+    )

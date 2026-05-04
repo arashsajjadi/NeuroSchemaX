@@ -80,14 +80,27 @@
       }
 
       if (spec.showLabels && layer.label) {
+        // Multi-line aware label.  Anchor near the bottom but lift if there
+        // are several stacked lines so the last line stays inside the canvas.
+        var fs = spec.fontSize || 10;
+        var nLines = layer.label.split("\n").length;
+        var lh = fs * 1.2;
+        var labelY = Math.min(h - 6 - (nLines - 1) * lh, h - 15);
         var t = U.el("text", {
-          x: x, y: h - 15,
+          x: x, y: labelY,
           "text-anchor": "middle",
-          "font-size": (spec.fontSize || 10),
+          "font-size": fs,
           "font-family": spec.fontFamily || "sans-serif",
           fill: "#333"
         }, svg);
-        t.textContent = layer.label;
+        var ll = layer.label.split("\n");
+        for (var li = 0; li < ll.length; li++) {
+          var ts = U.el("tspan", {
+            x: x,
+            dy: li === 0 ? 0 : lh
+          }, t);
+          ts.textContent = ll[li];
+        }
       }
     }
 

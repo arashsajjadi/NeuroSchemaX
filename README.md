@@ -70,6 +70,13 @@ What you get without any options:
   (`+BN`, `+LN`, `+Drop 0.5`) instead of taking their own visual columns.
   Fusing keeps Dropout/Norm visible without crowding the diagram; the full
   layer remains in `export-debug-json`.
+- **Multi-line label wrapping (no `…` truncation)** — when a decorated label
+  is wider than its slot, the renderer wraps it onto multiple lines on
+  whitespace and `+badge` boundaries.  Important tokens (`ReLU`, `+Drop 0.5`,
+  `k3`, `s2`, `1000 classes`, `12 heads`, `d=768`) are never cut mid-token.
+- **Auto canvas widening** — if any label is genuinely wider than its slot,
+  the canvas grows to fit it instead of clipping or overlapping. Tiny
+  models render with reduced vertical margins so they fill the canvas.
 - **Diagram subtitle** — every rendered HTML includes a subtitle that shows
   the render family, fidelity, original layer count, and visual stage count
   when they differ: `FCNN · exact · 6 layers · 4 visual stages`.
@@ -329,10 +336,11 @@ The last dense layer in any diagram is labeled `Output N` (MLP) or `Classifier` 
   This is a **block-level approximation, not exact Transformer rendering**.
   Q/K/V projections, individual heads, exact residual paths,
   positional-encoding internals, and exact tensor flow are not drawn.
-- `unsupported` — renders a professional diagnostic page that identifies the
-  detected operation types (Embedding, Attention, Dense/FFN, Norm) and
-  directs the user to `block_summary` mode or the debug JSON export.  The
-  diagnostic block is sized so multi-line content never overflows.
+- `unsupported` — renders a structured **HTML diagnostic card** (not an SVG
+  box) that identifies the detected operation types (Embedding, Attention,
+  Dense/FFN, Norm) and directs the user to `block_summary` mode or the
+  debug JSON export.  The card is laid out in HTML, so multi-line content
+  flows naturally without overflow at any canvas width.
 
 **`approximate_mode`** controls how approximate renderings are handled:
 - `warn` — amber warning badge shown in HTML (default)
