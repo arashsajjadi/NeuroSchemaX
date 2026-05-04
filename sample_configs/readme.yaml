@@ -1,0 +1,15 @@
+# README preset — compact dimensions, friendly for embedding in docs.
+theme: readme
+style: auto
+layout_mode: compact
+width: 900
+height: 400
+show_labels: true
+show_shapes: false
+label_density: minimal
+line_style: solid
+line_width: 1.0
+edge_opacity: 0.4
+font_family: sans-serif
+font_size: 11
+margin: 25

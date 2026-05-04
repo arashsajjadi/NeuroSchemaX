@@ -1,0 +1,16 @@
+# Thesis preset — larger, serif font, verbose labels.
+theme: thesis
+style: auto
+layout_mode: presentation
+width: 1600
+height: 900
+show_labels: true
+show_shapes: true
+label_density: verbose
+line_style: solid
+line_width: 1.2
+edge_opacity: 0.4
+font_family: serif
+font_size: 13
+show_legend: true
+margin: 50

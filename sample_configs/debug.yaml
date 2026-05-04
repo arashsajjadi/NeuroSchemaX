@@ -1,0 +1,16 @@
+# Debug preset — shows everything, monospace font, dashed edges.
+theme: debug
+style: auto
+layout_mode: compact
+width: 1800
+height: 800
+show_labels: true
+show_shapes: true
+label_density: verbose
+line_style: dashed
+line_width: 1.0
+edge_opacity: 0.5
+font_family: monospace
+font_size: 10
+show_legend: true
+margin: 20

@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Packaging
+*.egg-info/
+src/*.egg-info/
+dist/
+build/
+MANIFEST
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Tools
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Editors / OS
+.DS_Store
+.idea/
+*.swp
+*.swo
+
+# Generated diagram outputs
+*.html
+*.svg
+
+# Generated JSON exports
+*.debug.json
+*.paper.json
+*.nnsvg.json

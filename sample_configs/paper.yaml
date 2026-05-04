@@ -1,0 +1,15 @@
+# Paper preset — publication-ready, clean, horizontal.
+theme: paper
+style: auto                # auto = infer from model
+layout_mode: presentation
+width: 1400
+height: 700
+show_labels: true
+show_shapes: true
+label_density: minimal
+line_style: solid
+line_width: 1.0
+edge_opacity: 0.35
+font_family: Helvetica, Arial, sans-serif
+font_size: 12
+margin: 40
