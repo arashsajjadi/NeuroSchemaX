@@ -63,6 +63,9 @@ _RECURRENT_KINDS = frozenset({
     LayerKind.LSTM, LayerKind.GRU, LayerKind.RECURRENT,
 })
 _SKIP_IN_ALL = frozenset({
+    # Activations and Norm/Dropout are absorbed by _peek_fused_decoration when
+    # adjacent to a major op.  This frozenset is the safety net for stray
+    # supporting ops that have no preceding host op (e.g. BN as the first layer).
     *_ACTIVATION_KINDS, *_NORM_KINDS,
     LayerKind.DROPOUT, LayerKind.PAD,
     LayerKind.ADD, LayerKind.CONCAT, LayerKind.MULTIPLY,
@@ -71,6 +74,34 @@ _TRANSFORMER_ABSORB = frozenset({
     *_NORM_KINDS,
     LayerKind.ADD, LayerKind.MULTIPLY, LayerKind.DROPOUT,
 })
+
+# Supporting ops that should be surfaced as inline "+badges" rather than
+# drawn as separate visual stages.  These are absorbed by the preceding
+# major op (Conv / Dense / Pool) when the user has not opted out.
+_BADGE_KINDS = frozenset({
+    LayerKind.BATCH_NORM, LayerKind.LAYER_NORM,
+    LayerKind.GROUP_NORM, LayerKind.INSTANCE_NORM,
+    LayerKind.DROPOUT,
+})
+
+
+def _badge_text(layer: SemanticLayer) -> str:
+    """Short badge string for a supporting op (BN, LN, Drop 0.5)."""
+    kind = layer.kind
+    if kind == LayerKind.BATCH_NORM:
+        return "BN"
+    if kind == LayerKind.LAYER_NORM:
+        return "LN"
+    if kind == LayerKind.GROUP_NORM:
+        return "GN"
+    if kind == LayerKind.INSTANCE_NORM:
+        return "IN"
+    if kind == LayerKind.DROPOUT:
+        rate = layer.attributes.get("rate") or layer.attributes.get("p")
+        if isinstance(rate, (int, float)) and 0 < rate < 1:
+            return f"Drop {rate:g}"
+        return "Drop"
+    return ""
 
 # ── Title/subtitle helpers ───────────────────────────────────────────────────
 
@@ -435,14 +466,18 @@ def _summarize_sequential(spec_layers: list[NNSVGLayerSpec]) -> list[NNSVGLayerS
             i += 1
 
         elif cur.layer_type == "dense":
-            # All remaining dense layers → Classifier box.
-            units_str = f" {cur.units}" if cur.units else ""
+            # All remaining dense layers → Classifier box.  Use the original
+            # semantic unit count (preserved on .extra) rather than the
+            # capped visual-node count when known.
+            true_u = cur.extra.get("true_units") if cur.extra else None
+            units = true_u or cur.units
+            units_str = f"\n{units} classes" if units and units > 1 else ""
             result.append(NNSVGLayerSpec(
                 layer_type="conv",
                 label=f"Classifier{units_str}",
                 channels=1,
-                feature_map_width=80,
-                feature_map_height=64,
+                feature_map_width=96,
+                feature_map_height=72,
                 color=_COLORS["output"],
             ))
             break
@@ -467,56 +502,78 @@ def _summarize_residual(
     U-Net:  Input → Encoder → Bottleneck → Decoder → Segmentation Head
     """
     has_concat = any(lay.kind == LayerKind.CONCAT for lay in arch.layers)
-    result: list[NNSVGLayerSpec] = []
+    has_upsample = any(lay.kind == LayerKind.UPSAMPLE for lay in arch.layers)
+    conv_count = sum(1 for lay in arch.layers if lay.kind in _CONV_KINDS)
+    last_conv_ch = next(
+        (lay.channels for lay in reversed(arch.layers)
+         if lay.kind in _CONV_KINDS and lay.channels),
+        None,
+    )
 
+    result: list[NNSVGLayerSpec] = []
     if spec_layers and spec_layers[0].layer_type == "input":
         result.append(spec_layers[0])
 
     if has_concat:
         # U-Net style encoder-decoder.  Concat/skip links are collapsed;
         # the label makes this explicit.
+        upsample_str = "Upsample ×2\n" if has_upsample else ""
+        out_label = (
+            f"Segmentation Head\n{last_conv_ch}ch out"
+            if last_conv_ch else "Segmentation Head"
+        )
         result += [
             NNSVGLayerSpec(
                 layer_type="conv",
-                label="Encoder\n↓ conv stages\nskip→debug JSON",
-                channels=1, feature_map_width=88, feature_map_height=88,
+                label="Encoder\nconv stages\nPool ↓2\nskip→debug JSON",
+                channels=1, feature_map_width=120, feature_map_height=110,
                 color=_COLORS["conv"],
             ),
             NNSVGLayerSpec(
-                layer_type="conv", label="Bottleneck",
-                channels=1, feature_map_width=80, feature_map_height=64,
+                layer_type="conv",
+                label="Bottleneck\nconv",
+                channels=1, feature_map_width=92, feature_map_height=80,
                 color=_COLORS["pool"],
             ),
             NNSVGLayerSpec(
                 layer_type="conv",
-                label="Decoder\n↑ conv stages\nconcat→debug JSON",
-                channels=1, feature_map_width=80, feature_map_height=80,
+                label=f"Decoder\n{upsample_str}conv stages\nconcat collapsed",
+                channels=1, feature_map_width=120, feature_map_height=110,
                 color=_COLORS["conv"],
             ),
             NNSVGLayerSpec(
-                layer_type="conv", label="Output",
-                channels=1, feature_map_width=64, feature_map_height=56,
+                layer_type="conv", label=out_label,
+                channels=1, feature_map_width=96, feature_map_height=72,
                 color=_COLORS["output"],
             ),
         ]
     else:
         # ResNet style — skip links are collapsed; label notes this explicitly.
         add_count = sum(1 for lay in arch.layers if lay.kind == LayerKind.ADD)
+        n_blocks = max(1, add_count)
+        # Distribute conv layers across blocks for an honest convs-per-block hint.
+        conv_per_block = max(1, conv_count // max(1, n_blocks + 1))
+
         result.append(NNSVGLayerSpec(
             layer_type="conv", label="Stem\nconv",
-            channels=1, feature_map_width=80, feature_map_height=68,
+            channels=1, feature_map_width=88, feature_map_height=72,
             color=_COLORS["conv"],
         ))
-        for b in range(max(1, add_count)):
+        for b in range(n_blocks):
+            ch_str = f"\n{last_conv_ch}ch" if last_conv_ch else ""
             result.append(NNSVGLayerSpec(
                 layer_type="conv",
-                label=f"Residual Block {b + 1}\n+skip collapsed\nsee debug JSON",
-                channels=1, feature_map_width=96, feature_map_height=92,
+                label=(
+                    f"Residual Block {b + 1}\n"
+                    f"{conv_per_block}×Conv k3{ch_str}\n"
+                    "+skip collapsed"
+                ),
+                channels=1, feature_map_width=120, feature_map_height=108,
                 color=_COLORS["norm"],
             ))
         result.append(NNSVGLayerSpec(
-            layer_type="conv", label="Head",
-            channels=1, feature_map_width=72, feature_map_height=60,
+            layer_type="conv", label="Head\nClassifier",
+            channels=1, feature_map_width=88, feature_map_height=68,
             color=_COLORS["output"],
         ))
 
@@ -549,6 +606,48 @@ def _apply_detail_level(
 
 # ── Transformer block-level view ─────────────────────────────────────────────
 
+def _transformer_metadata(arch: SemanticArchitecture) -> tuple[str, str, str]:
+    """Extract heads / d_model / FFN-dim hints when present in attributes.
+
+    Returns (heads_str, dmodel_str, ffn_str).  Empty strings when unknown.
+    Non-cryptic: "12 heads", "d=768", "FFN 3072".
+    """
+    heads = ""
+    dmodel = ""
+    ffn_dim = ""
+
+    # First attention layer's attributes
+    for lay in arch.layers:
+        if lay.kind == LayerKind.ATTENTION:
+            attrs = lay.attributes or {}
+            h = attrs.get("num_heads") or attrs.get("heads")
+            d = attrs.get("d_model") or attrs.get("embed_dim") or attrs.get("hidden_size")
+            if isinstance(h, int) and h > 0:
+                heads = f"{h} heads"
+            if isinstance(d, int) and d > 0:
+                dmodel = f"d={d}"
+            elif lay.output_shape:
+                ints = [i for i in lay.output_shape if isinstance(i, int) and i > 0]
+                if ints:
+                    dmodel = f"d={ints[-1]}"
+            break
+
+    # FFN width: the largest dense-units between the first attention and a
+    # smaller "down-project" dense, if discernible.
+    dense_units = [
+        lay.units for lay in arch.layers
+        if lay.kind == LayerKind.DENSE and isinstance(lay.units, int) and lay.units > 0
+    ]
+    if len(dense_units) >= 2:
+        # Heuristic: the FFN expansion sits between embedding and classifier.
+        # Take the max non-classifier dense width.
+        candidates = sorted(dense_units[:-1], reverse=True) if len(dense_units) > 1 else []
+        if candidates:
+            ffn_dim = f"FFN {candidates[0]}"
+
+    return heads, dmodel, ffn_dim
+
+
 def _map_transformer_blocks(
     arch: SemanticArchitecture,
     cfg: RenderConfig,
@@ -562,10 +661,16 @@ def _map_transformer_blocks(
       Input → Embedding → [PosEnc] → [MH-Attn]\\nAdd & Norm →
       [FFN]\\nAdd & Norm → ... → [Head]
 
+    Heads / d_model / FFN-dim are surfaced when present in layer attributes.
+
     NOT exact Transformer rendering.  Q/K/V projections, individual attention
     heads, exact residual paths, and tensor flow are NOT drawn.
     Full layer list is preserved in the debug-JSON export.
     """
+    heads_str, dmodel_str, ffn_str = _transformer_metadata(arch)
+    attn_meta_lines = [s for s in (heads_str, dmodel_str) if s]
+    ffn_meta_lines = [ffn_str] if ffn_str else []
+
     layers = arch.layers
     n = len(layers)
     specs: list[NNSVGLayerSpec] = []
@@ -578,7 +683,7 @@ def _map_transformer_blocks(
         if kind == LayerKind.INPUT:
             specs.append(NNSVGLayerSpec(
                 layer_type="conv", label="Tokens\nInput",
-                channels=1, feature_map_width=72, feature_map_height=64,
+                channels=1, feature_map_width=80, feature_map_height=68,
                 color=_COLORS["input"],
             ))
             i += 1
@@ -586,7 +691,7 @@ def _map_transformer_blocks(
         elif kind == LayerKind.EMBEDDING:
             specs.append(NNSVGLayerSpec(
                 layer_type="conv", label="Embedding",
-                channels=1, feature_map_width=80, feature_map_height=72,
+                channels=1, feature_map_width=88, feature_map_height=72,
                 color=_COLORS["dense"],
             ))
             i += 1
@@ -594,22 +699,23 @@ def _map_transformer_blocks(
         elif kind == LayerKind.ADD and not first_attn_seen:
             # ADD before the first attention → likely positional encoding.
             specs.append(NNSVGLayerSpec(
-                layer_type="conv", label="PosEnc",
-                channels=1, feature_map_width=72, feature_map_height=60,
+                layer_type="conv", label="Positional\nEncoding",
+                channels=1, feature_map_width=80, feature_map_height=68,
                 color=_COLORS["norm"],
             ))
             i += 1
 
         elif kind == LayerKind.ATTENTION:
             first_attn_seen = True
-            # Absorb following Add/Norm (residual sub-layer).
             j = i + 1
             while j < n and layers[j].kind in _TRANSFORMER_ABSORB:
                 j += 1
-            # Multi-line label: first line is the main op, second is the residual.
+            attn_lines = ["[MH-Attn]"]
+            attn_lines.extend(attn_meta_lines)
+            attn_lines.append("Add & Norm")
             specs.append(NNSVGLayerSpec(
-                layer_type="conv", label="[MH-Attn]\nAdd & Norm",
-                channels=1, feature_map_width=88, feature_map_height=108,
+                layer_type="conv", label="\n".join(attn_lines),
+                channels=1, feature_map_width=104, feature_map_height=124,
                 color=_COLORS["attention"],
             ))
             i = j
@@ -617,10 +723,6 @@ def _map_transformer_blocks(
         elif kind == LayerKind.DENSE:
             # Absorb FFN block non-greedily:
             #   Dense-up → optional (Act + Dense-down) → optional Add/Norm
-            # A second Dense is only absorbed when an activation separated the two,
-            # which is the standard FFN up-project → activate → down-project pattern.
-            # This prevents the classifier (a separate trailing Dense) from being
-            # swallowed into the same block as the FFN.
             j = i + 1
             activation_seen = False
             while j < n and layers[j].kind in (_ACTIVATION_KINDS | frozenset({LayerKind.DROPOUT})):
@@ -638,15 +740,25 @@ def _map_transformer_blocks(
             )
             is_classifier = (j >= n) or not non_trivial
             if is_classifier:
+                # Use the trailing dense's true unit count when known.
+                trailing_units = layers[i].units if isinstance(layers[i].units, int) else None
+                head_lines = ["[Head]"]
+                if trailing_units and trailing_units > 1:
+                    head_lines.append(f"{trailing_units} classes")
+                else:
+                    head_lines.append("Classifier")
                 specs.append(NNSVGLayerSpec(
-                    layer_type="conv", label="[Head]\nClassifier",
-                    channels=1, feature_map_width=80, feature_map_height=72,
+                    layer_type="conv", label="\n".join(head_lines),
+                    channels=1, feature_map_width=92, feature_map_height=80,
                     color=_COLORS["output"],
                 ))
             else:
+                ffn_lines = ["[FFN]"]
+                ffn_lines.extend(ffn_meta_lines)
+                ffn_lines.append("Add & Norm")
                 specs.append(NNSVGLayerSpec(
-                    layer_type="conv", label="[FFN]\nAdd & Norm",
-                    channels=1, feature_map_width=80, feature_map_height=92,
+                    layer_type="conv", label="\n".join(ffn_lines),
+                    channels=1, feature_map_width=96, feature_map_height=108,
                     color=_COLORS["ffn"],
                 ))
             i = j
@@ -657,7 +769,7 @@ def _map_transformer_blocks(
                 j += 1
             specs.append(NNSVGLayerSpec(
                 layer_type="conv", label=f"[{kind.name}]\nAdd & Norm",
-                channels=1, feature_map_width=80, feature_map_height=92,
+                channels=1, feature_map_width=88, feature_map_height=96,
                 color=_COLORS["recurrent"],
             ))
             i = j
@@ -665,7 +777,7 @@ def _map_transformer_blocks(
         elif kind in _NORM_KINDS:
             specs.append(NNSVGLayerSpec(
                 layer_type="conv", label="Norm",
-                channels=1, feature_map_width=30, feature_map_height=48,
+                channels=1, feature_map_width=44, feature_map_height=60,
                 color=_COLORS["norm"],
             ))
             i += 1
@@ -678,6 +790,53 @@ def _map_transformer_blocks(
 
 # ── FCNN mapper ──────────────────────────────────────────────────────────────
 
+def _peek_fused_decoration(
+    layers: list[SemanticLayer],
+    start: int,
+    show_activations: bool,
+) -> tuple[str, list[str], int]:
+    """Look ahead from *start* and return (act_name, badges, n_consumed).
+
+    Activations are fused only when ``show_activations`` is True.
+    BatchNorm/LayerNorm/Dropout are always fused as ``+BN``/``+LN``/``+Drop``
+    badges so that supporting ops are visible without taking their own slot.
+    """
+    n = len(layers)
+    i = start
+    fused_act = ""
+    badges: list[str] = []
+    while i < n:
+        k = layers[i].kind
+        if k in _ACTIVATION_KINDS:
+            if not fused_act and show_activations:
+                fused_act = _act_name(k)
+                i += 1
+                continue
+            break
+        if k in _BADGE_KINDS:
+            text = _badge_text(layers[i])
+            if text and text not in badges:
+                badges.append(text)
+            i += 1
+            continue
+        break
+    return fused_act, badges, i - start
+
+
+def _decorate_label(base: str, fused_act: str, badges: list[str]) -> str:
+    """Append +act and badge tokens to *base*.
+
+    No truncation here: the per-slot safe-label policy further down the
+    pipeline knows the canvas width and chooses a safe character budget.
+    Truncating here would corrupt important tokens like ``+Drop 0.5``.
+    """
+    parts = [base]
+    if fused_act:
+        parts.append(f"+{fused_act}")
+    parts.extend(f"+{b}" for b in badges)
+    return " ".join(parts)
+
+
 def _map_fcnn(
     arch: SemanticArchitecture,
     cfg: RenderConfig,
@@ -686,6 +845,7 @@ def _map_fcnn(
     """Each significant layer → a column of neurons.
 
     Activations are fused into the preceding label when show_activations=True.
+    Norms/Dropout are fused as +BN, +LN, +Drop badges.
     """
     layers = arch.layers
     n = len(layers)
@@ -704,13 +864,9 @@ def _map_fcnn(
             i += 1
             continue
 
-        fused_act = ""
-        if (
-            cfg.show_activations
-            and i + 1 < n
-            and layers[i + 1].kind in _ACTIVATION_KINDS
-        ):
-            fused_act = _act_name(layers[i + 1].kind)
+        fused_act, badges, n_consumed = _peek_fused_decoration(
+            layers, i + 1, cfg.show_activations
+        )
 
         units = layer.units or layer.channels or 0
         if units == 0 and layer.output_shape:
@@ -721,22 +877,26 @@ def _map_fcnn(
             units = 10
 
         base = _make_label(layer, lm)
-        label = _truncate(f"{base} +{fused_act}" if fused_act else base)
+        label = _decorate_label(base, fused_act, badges)
 
         specs.append(NNSVGLayerSpec(
             layer_type="dense",
             label=label,
             units=min(units, 256),
             color=_color_for(kind),
+            extra={"true_units": units} if units else {},
         ))
 
-        i += 1 + (1 if fused_act else 0)
+        i += 1 + n_consumed
 
-    # Relabel the last dense layer as "Output N" (more meaningful than "Dense N").
+    # Relabel the last dense layer as "Output N" using true semantic units
+    # rather than the visual cap.  Falls back to display units when unknown.
     dense_specs = [s for s in specs if s.layer_type == "dense"]
     if dense_specs:
         last = dense_specs[-1]
-        u = last.units or 0
+        u = last.extra.get("true_units") if last.extra else None
+        if not u:
+            u = last.units or 0
         last.label = _truncate(f"Output {u}" if u else "Output")
 
     return specs
@@ -781,17 +941,15 @@ def _map_lenet(
             i += 1
             continue
 
-        fused_act = ""
-        if (
-            cfg.show_activations
-            and i + 1 < n
-            and layers[i + 1].kind in _ACTIVATION_KINDS
-        ):
-            fused_act = _act_name(layers[i + 1].kind)
+        fused_act, badges, n_consumed = _peek_fused_decoration(
+            layers, i + 1, cfg.show_activations
+        )
+        # INPUT layers do not absorb decorations
+        if kind == LayerKind.INPUT:
+            fused_act, badges, n_consumed = "", [], 0
 
         base = _make_label(layer, lm)
-        label = _truncate(f"{base} +{fused_act}" if fused_act else base)
-        absorb = bool(fused_act)
+        label = _decorate_label(base, fused_act, badges)
 
         if kind in _CONV_KINDS:
             h, w = _estimate_feature_map(layer)
@@ -819,10 +977,12 @@ def _map_lenet(
             ))
 
         elif kind == LayerKind.DENSE:
+            true_units = layer.units or 10
             specs.append(NNSVGLayerSpec(
                 layer_type="dense", label=label,
-                units=min(layer.units or 10, _MAX_DENSE_UNITS_LENET),
+                units=min(true_units, _MAX_DENSE_UNITS_LENET),
                 color=_color_for(kind),
+                extra={"true_units": true_units},
             ))
 
         elif kind == LayerKind.INPUT:
@@ -835,22 +995,28 @@ def _map_lenet(
                     channels=ch, feature_map_width=w or 28,
                     feature_map_height=h or 28, color=_color_for(kind),
                 ))
-                absorb = False
 
         else:
+            true_units = layer.units or layer.channels or 8
             specs.append(NNSVGLayerSpec(
                 layer_type="dense", label=label,
-                units=min(layer.units or layer.channels or 8, _MAX_DENSE_UNITS_LENET),
+                units=min(true_units, _MAX_DENSE_UNITS_LENET),
                 color=_color_for(kind),
+                extra={"true_units": true_units},
             ))
 
-        i += 1 + (1 if absorb else 0)
+        i += 1 + n_consumed
 
-    # Relabel the last dense column as "Classifier" (units are capped for display;
-    # the actual classifier size lives in the architecture spec and debug JSON).
+    # Relabel the last dense column as "Classifier N" using semantic units
+    # (visual node count is capped; the *meaning* should match the architecture).
     dense_specs = [s for s in specs if s.layer_type == "dense"]
     if dense_specs:
-        dense_specs[-1].label = "Classifier"
+        last = dense_specs[-1]
+        true_u = last.extra.get("true_units") if last.extra else None
+        if true_u and true_u > 1:
+            last.label = _truncate(f"Classifier {true_u}")
+        else:
+            last.label = "Classifier"
 
     return specs
 
@@ -878,17 +1044,14 @@ def _map_alexnet(
             i += 1
             continue
 
-        fused_act = ""
-        if (
-            cfg.show_activations
-            and i + 1 < n
-            and layers[i + 1].kind in _ACTIVATION_KINDS
-        ):
-            fused_act = _act_name(layers[i + 1].kind)
+        fused_act, badges, n_consumed = _peek_fused_decoration(
+            layers, i + 1, cfg.show_activations
+        )
+        if kind == LayerKind.INPUT:
+            fused_act, badges, n_consumed = "", [], 0
 
         base = _make_label(layer, lm)
-        label = _truncate(f"{base} +{fused_act}" if fused_act else base)
-        absorb = bool(fused_act)
+        label = _decorate_label(base, fused_act, badges)
 
         if kind in _CONV_KINDS:
             h, w = _estimate_feature_map(layer)
@@ -916,11 +1079,12 @@ def _map_alexnet(
             ))
 
         elif kind == LayerKind.DENSE:
-            # Tightly cap dense to prevent classifier domination.
+            true_units = layer.units or 8
             specs.append(NNSVGLayerSpec(
                 layer_type="dense", label=label,
-                units=min(layer.units or 8, _MAX_DENSE_UNITS_ALEXNET),
+                units=min(true_units, _MAX_DENSE_UNITS_ALEXNET),
                 color=_color_for(kind),
+                extra={"true_units": true_units},
             ))
 
         elif kind == LayerKind.INPUT:
@@ -933,21 +1097,27 @@ def _map_alexnet(
                     channels=ch, feature_map_width=w or 20,
                     feature_map_height=h or 20, color=_color_for(kind),
                 ))
-                absorb = False
 
         else:
+            true_units = layer.units or layer.channels or 6
             specs.append(NNSVGLayerSpec(
                 layer_type="dense", label=label,
-                units=min(layer.units or layer.channels or 6, _MAX_DENSE_UNITS_ALEXNET),
+                units=min(true_units, _MAX_DENSE_UNITS_ALEXNET),
                 color=_color_for(kind),
+                extra={"true_units": true_units},
             ))
 
-        i += 1 + (1 if absorb else 0)
+        i += 1 + n_consumed
 
-    # Relabel the last dense column as "Classifier".
+    # Relabel the last dense column as "Classifier N" with the semantic units.
     dense_specs = [s for s in specs if s.layer_type == "dense"]
     if dense_specs:
-        dense_specs[-1].label = "Classifier"
+        last = dense_specs[-1]
+        true_u = last.extra.get("true_units") if last.extra else None
+        if true_u and true_u > 1:
+            last.label = _truncate(f"Classifier {true_u}")
+        else:
+            last.label = "Classifier"
 
     return specs
 
@@ -955,10 +1125,22 @@ def _map_alexnet(
 # ── Auto-sizing ──────────────────────────────────────────────────────────────
 
 _MIN_PX_PER_LAYER = 80
+# Default screenshot-friendly width for very small models so the diagram does
+# not look lost in a large empty canvas.  Compact mode shrinks further.
+_SMALL_MODEL_WIDTH = 760
+_COMPACT_PX_PER_LAYER = 64
 
 
-def _auto_width(n_layers: int, configured_width: int) -> int:
-    return max(configured_width, n_layers * _MIN_PX_PER_LAYER + 120)
+def _auto_width(n_layers: int, configured_width: int, compact: bool = False) -> int:
+    """Choose a canvas width that is screenshot-friendly for the layer count.
+
+    - Compact mode uses a tighter per-layer budget so moderately deep
+      summaries do not require horizontal scrolling.
+    - Otherwise we never shrink the user/theme-configured width; we only
+      grow it to keep wide models from crowding their labels.
+    """
+    px_per = _COMPACT_PX_PER_LAYER if compact else _MIN_PX_PER_LAYER
+    return max(configured_width, n_layers * px_per + 120)
 
 
 # ── Public entry point ───────────────────────────────────────────────────────
@@ -992,7 +1174,8 @@ def map_to_nnsvg(
     _unsupported_subtitle: str = ""
     if has_seq_op and config.style is None:
         if config.transformer_mode == "unsupported":
-            # Build a professional diagnostic block instead of a tiny placeholder.
+            # Professional diagnostic block — wide enough that the multi-line
+            # explanation never overflows.  All copy is short and actionable.
             detected: list[str] = []
             if any(lay.kind == LayerKind.EMBEDDING for lay in arch.layers):
                 detected.append("Embedding")
@@ -1002,19 +1185,25 @@ def map_to_nnsvg(
                 detected.append("Recurrent")
             if any(lay.kind == LayerKind.DENSE for lay in arch.layers):
                 detected.append("Dense / FFN")
-            detected_str = "\n" + ", ".join(detected) if detected else ""
+            if any(lay.kind in _NORM_KINDS for lay in arch.layers):
+                detected.append("Norm")
+            detected_str = ", ".join(detected) if detected else "—"
             diag_label = (
-                "[Not Supported]\n"
-                "Use transformer_mode=\n"
-                '"block_summary" for\n'
-                f"an approximate view.{detected_str}"
+                "Transformer exact rendering\n"
+                "is not supported.\n"
+                "\n"
+                'Use transformer_mode="block_summary"\n'
+                "for an approximate overview.\n"
+                "\n"
+                f"Detected: {detected_str}\n"
+                "Full metadata in debug JSON."
             )
             layers = [NNSVGLayerSpec(
                 layer_type="conv",
                 label=diag_label,
                 channels=1,
-                feature_map_width=240,
-                feature_map_height=220,
+                feature_map_width=420,
+                feature_map_height=260,
                 color="#E8EAF6",   # light indigo — clearly different from normal diagram
             )]
             family = RenderFamily.LENET
@@ -1042,7 +1231,9 @@ def map_to_nnsvg(
         layers = _apply_detail_level(layers, arch, config.detail_level)
 
     # ── Auto-size canvas before label safety ──────────────────────────────
-    auto_width = _auto_width(len(layers), config.width)
+    from ..core.enums import LayoutMode
+    is_compact = config.layout_mode == LayoutMode.COMPACT
+    auto_width = _auto_width(len(layers), config.width, compact=is_compact)
 
     # ── Label safety: prevent overlap and clipping ────────────────────────
     # Skip for transformer blocks — JS auto-scales font inside rectangles.

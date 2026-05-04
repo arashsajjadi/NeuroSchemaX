@@ -62,9 +62,14 @@ What you get without any options:
 - **Operation-aware labels** — layers are labeled with their operation type
   and key parameters: `Conv 64 k3`, `Dense 128`, `GAP`, `MaxP k2 s2`,
   `[MH-Attn]`.  The last dense layer is labeled `Output N` (MLP) or
-  `Classifier` (CNN).
-- **Activation fusion** — a ReLU or GeLU immediately following a layer is
-  fused into the label: `Conv 64 k3 +ReLU`, `Dense 128 +GeLU`.
+  `Classifier N` (CNN), where `N` is the true semantic unit count even when
+  the visual node count is capped for readability.
+- **Activation and supporting-op fusion** — a ReLU/GeLU immediately following
+  a major layer is fused into the label as `+ReLU`/`+GeLU`.  BatchNorm,
+  LayerNorm, GroupNorm and Dropout are surfaced as inline badges
+  (`+BN`, `+LN`, `+Drop 0.5`) instead of taking their own visual columns.
+  Fusing keeps Dropout/Norm visible without crowding the diagram; the full
+  layer remains in `export-debug-json`.
 - **Diagram subtitle** — every rendered HTML includes a subtitle that shows
   the render family, fidelity, original layer count, and visual stage count
   when they differ: `FCNN · exact · 6 layers · 4 visual stages`.
@@ -316,12 +321,18 @@ The last dense layer in any diagram is labeled `Output N` (MLP) or `Classifier` 
 
 **`transformer_mode`** controls Transformer/attention/recurrent rendering:
 - `block_summary` — renders a sequence of labeled rectangular blocks:
-  `Tokens/Input → Embedding → [MH-Attn] / Add & Norm → [FFN] / Add & Norm → [Head] / Classifier`.
-  Positional-encoding `Add` layers before the first attention block are labeled `PosEnc`.
-  This is a block-level approximation, not exact Transformer rendering.
-- `unsupported` — renders a professional diagnostic page that identifies the detected
-  operation types (Embedding, Attention, Dense/FFN) and directs the user to
-  `block_summary` mode or the debug JSON export
+  `Tokens/Input → Embedding → [MH-Attn] / Add & Norm → [FFN] / Add & Norm → [Head] / N classes`.
+  Positional-encoding `Add` layers before the first attention block are labeled
+  `Positional Encoding`.  When `num_heads` / `d_model` are present on the
+  attention layer they appear inside the block label as `12 heads`, `d=768`,
+  `FFN 3072`.
+  This is a **block-level approximation, not exact Transformer rendering**.
+  Q/K/V projections, individual heads, exact residual paths,
+  positional-encoding internals, and exact tensor flow are not drawn.
+- `unsupported` — renders a professional diagnostic page that identifies the
+  detected operation types (Embedding, Attention, Dense/FFN, Norm) and
+  directs the user to `block_summary` mode or the debug JSON export.  The
+  diagnostic block is sized so multi-line content never overflows.
 
 **`approximate_mode`** controls how approximate renderings are handled:
 - `warn` — amber warning badge shown in HTML (default)
@@ -510,9 +521,14 @@ exact residual paths, positional-encoding internals, and tensor flow are
 not drawn.
 
 With `detail_level="summary"`, ResNet architectures are shown as:
-`Stem → Residual Block 1 (+skip collapsed) → … → Head`
+`Stem → Residual Block N (n×Conv k3, Cch, +skip collapsed) → … → Head / Classifier`
 and U-Net architectures as:
-`Encoder (↓ conv / skip→debug JSON) → Bottleneck → Decoder (↑ conv / concat→debug JSON) → Output`
+`Encoder (conv stages, Pool ↓2, skip→debug JSON) → Bottleneck → Decoder (Upsample ×2, conv stages, concat collapsed) → Segmentation Head`
+
+These summaries are honest approximations: skip and concat links are not
+drawn, but the labels make it explicit that they have been collapsed.  The
+exact graph (every Add/Concat/Upsample with attributes) is preserved in
+`export-debug-json`.
 
 Every approximate rendering:
 - shows an amber warning badge in the HTML explaining what was simplified

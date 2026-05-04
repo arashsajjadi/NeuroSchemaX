@@ -1215,3 +1215,263 @@ def test_summary_subtitle_shows_visual_stage_count():
         assert "stages" in spec.subtitle or str(len(spec.layers)) in spec.subtitle, (
             f"Subtitle should also mention visual stage count; got {spec.subtitle!r}"
         )
+
+
+# ── Systemic policy tests for label badges, classifier semantics, etc. ──────
+
+def _cnn_with_bn_dropout_spec() -> dict:
+    return {
+        "model_name": "cnn_bn",
+        "layers": [
+            {"name": "input", "kind": "input", "shape": [1, 1, 28, 28]},
+            {"name": "conv1", "kind": "conv", "out_channels": 16, "kernel_size": [3, 3]},
+            {"name": "bn1",   "kind": "batchnorm"},
+            {"name": "relu1", "kind": "relu"},
+            {"name": "fc1",   "kind": "dense", "units": 128},
+            {"name": "drop1", "kind": "dropout", "rate": 0.5},
+            {"name": "out",   "kind": "dense", "units": 10},
+        ],
+    }
+
+
+def test_batch_norm_appears_as_badge_in_compact_label():
+    """BatchNorm following Conv should appear as a +BN badge, not a separate column."""
+    spec = nsx.build_nnsvg_spec(_cnn_with_bn_dropout_spec(), label_mode="compact")
+    conv_labels = [s.label for s in spec.layers if s.layer_type == "conv" and s.channels != 1]
+    assert any("+BN" in lb for lb in conv_labels), (
+        f"Expected '+BN' badge fused into conv label; got: {conv_labels}"
+    )
+
+
+def test_dropout_appears_as_badge_in_compact_label():
+    """Dropout following Dense should appear as a +Drop badge, not a separate column."""
+    spec = nsx.build_nnsvg_spec(_cnn_with_bn_dropout_spec(), label_mode="compact")
+    dense_labels = [s.label for s in spec.layers if s.layer_type == "dense"]
+    combined = " ".join(dense_labels)
+    assert "+Drop" in combined, (
+        f"Expected '+Drop' badge in dense label; got: {dense_labels}"
+    )
+
+
+def test_badges_do_not_create_extra_visual_columns():
+    """BN/Dropout should not occupy their own visual columns."""
+    spec = nsx.build_nnsvg_spec(_cnn_with_bn_dropout_spec())
+    labels = [s.label for s in spec.layers]
+    for lb in labels:
+        # No raw layer name for BN/Drop should appear as the entire label
+        assert lb not in ("bn1", "drop1"), (
+            f"BN/Dropout should be a badge, not its own column: {labels}"
+        )
+
+
+def test_show_activations_false_keeps_badges_visible():
+    """show_activations=False removes ReLU but BN/Drop badges remain visible."""
+    spec = nsx.build_nnsvg_spec(_cnn_with_bn_dropout_spec(), show_activations=False)
+    labels = " ".join(s.label for s in spec.layers)
+    assert "+ReLU" not in labels and "+relu" not in labels.lower(), (
+        f"show_activations=False but ReLU appeared: {labels!r}"
+    )
+    assert "+BN" in labels, (
+        f"Norm badges should remain when show_activations=False: {labels!r}"
+    )
+
+
+def test_classifier_label_uses_true_units_not_visual_count():
+    """A 1000-class classifier must show '1000' in its label even though visual cap is < 10."""
+    spec = nsx.build_nnsvg_spec({
+        "model_name": "imgnet",
+        "layers": (
+            [{"name": "input", "kind": "input", "shape": [1, 3, 224, 224]}]
+            + [{"name": f"c{i}", "kind": "conv", "out_channels": 64, "kernel_size": [3, 3]}
+               for i in range(4)]
+            + [{"name": "fc", "kind": "dense", "units": 1000}]
+        ),
+    })
+    last = spec.layers[-1]
+    assert "1000" in last.label, (
+        f"Classifier label must reflect true unit count (1000), got {last.label!r}"
+    )
+
+
+def test_summary_classifier_uses_classes_label():
+    """Summary mode classifier should label semantic 'N classes', not just unit count."""
+    spec = nsx.build_nnsvg_spec({
+        "model_name": "deep",
+        "layers": (
+            [{"name": "input", "kind": "input", "shape": [1, 3, 224, 224]}]
+            + [{"name": f"c{i}", "kind": "conv", "out_channels": 64, "kernel_size": [3, 3]}
+               for i in range(14)]
+            + [{"name": "fc", "kind": "dense", "units": 1000}]
+        ),
+    }, detail_level="summary")
+    last_label = spec.layers[-1].label
+    assert "Classifier" in last_label and "1000" in last_label, (
+        f"Summary classifier should be 'Classifier\\n1000 classes'; got {last_label!r}"
+    )
+
+
+def test_unsupported_diagnostic_block_is_wide_for_text():
+    """Diagnostic block must be wide enough for the explanation lines."""
+    trans_spec = {
+        "model_name": "trans",
+        "layers": [
+            {"name": "embed", "kind": "embedding"},
+            {"name": "attn",  "kind": "attention"},
+            {"name": "ff",    "kind": "dense", "units": 512},
+        ],
+    }
+    spec = nsx.build_nnsvg_spec(trans_spec, transformer_mode="unsupported")
+    box = spec.layers[0]
+    # Wide enough that the longest line in the new diagnostic content fits
+    assert box.feature_map_width >= 320, (
+        f"Diagnostic block must be wide for multi-line content; got fmW={box.feature_map_width}"
+    )
+
+
+def test_unsupported_diagnostic_mentions_block_summary_and_debug():
+    """Diagnostic copy must mention both block_summary mode and debug JSON."""
+    spec = nsx.build_nnsvg_spec({
+        "model_name": "trans",
+        "layers": [
+            {"name": "embed", "kind": "embedding"},
+            {"name": "attn",  "kind": "attention"},
+        ],
+    }, transformer_mode="unsupported")
+    label = spec.layers[0].label
+    assert "block_summary" in label, (
+        f"Diagnostic must reference block_summary mode; got {label!r}"
+    )
+    assert "debug" in label.lower(), (
+        f"Diagnostic must mention debug JSON; got {label!r}"
+    )
+
+
+def test_transformer_block_summary_includes_pos_encoding():
+    """When an Add appears before the first Attention, label it Positional Encoding."""
+    spec = nsx.build_nnsvg_spec({
+        "model_name": "trans",
+        "layers": [
+            {"name": "embed", "kind": "embedding"},
+            {"name": "pos",   "kind": "add"},
+            {"name": "attn",  "kind": "attention"},
+            {"name": "ff",    "kind": "dense", "units": 512},
+        ],
+    })
+    labels = " ".join(s.label for s in spec.layers)
+    assert "Positional" in labels or "PosEnc" in labels, (
+        f"PosEnc/Positional Encoding label expected; got: {labels!r}"
+    )
+
+
+def test_transformer_block_summary_surfaces_metadata_when_available():
+    """Heads / d_model attributes on attention layer should appear in the block label."""
+    spec = nsx.build_nnsvg_spec({
+        "model_name": "trans",
+        "layers": [
+            {"name": "embed", "kind": "embedding"},
+            {"name": "attn",  "kind": "attention",
+             "num_heads": 12, "d_model": 768},
+            {"name": "ff",    "kind": "dense", "units": 3072},
+            {"name": "out",   "kind": "dense", "units": 1000},
+        ],
+    })
+    combined = "\n".join(s.label for s in spec.layers)
+    assert "12 heads" in combined, (
+        f"Expected '12 heads' in block summary; got: {combined!r}"
+    )
+    assert "d=768" in combined, (
+        f"Expected 'd=768' in block summary; got: {combined!r}"
+    )
+
+
+def test_resnet_summary_block_label_has_conv_count():
+    """Residual block summary must include conv count so it is honest about content."""
+    spec = nsx.build_nnsvg_spec({
+        "model_name": "resnet",
+        "layers": [
+            {"name": "input", "kind": "input", "shape": [1, 3, 224, 224]},
+            *[{"name": f"c{i}", "kind": "conv",
+               "out_channels": 64, "kernel_size": [3, 3]} for i in range(6)],
+            {"name": "add1", "kind": "add"},
+            {"name": "add2", "kind": "add"},
+            {"name": "fc",   "kind": "dense", "units": 10},
+        ],
+    }, detail_level="summary")
+    res_labels = [s.label for s in spec.layers if "Residual Block" in s.label]
+    assert res_labels, f"No residual block labels: {[s.label for s in spec.layers]}"
+    # Each residual block label must mention either Conv count or channel count.
+    for lb in res_labels:
+        assert "Conv" in lb or "ch" in lb, (
+            f"Residual block label must mention conv/channel info: {lb!r}"
+        )
+
+
+def test_unet_summary_mentions_upsample_or_decoder():
+    """U-Net summary must show Decoder block and concat-collapsed metadata."""
+    spec = nsx.build_nnsvg_spec({
+        "model_name": "unet",
+        "layers": [
+            {"name": "input", "kind": "input", "shape": [1, 1, 64, 64]},
+            {"name": "e1",   "kind": "conv",     "out_channels": 64,  "kernel_size": [3, 3]},
+            {"name": "e2",   "kind": "conv",     "out_channels": 128, "kernel_size": [3, 3]},
+            {"name": "bot",  "kind": "conv",     "out_channels": 256, "kernel_size": [3, 3]},
+            {"name": "up1",  "kind": "upsample", "scale_factor": 2},
+            {"name": "d1",   "kind": "conv",     "out_channels": 128, "kernel_size": [3, 3]},
+            {"name": "cat",  "kind": "concat"},
+            {"name": "out",  "kind": "conv",     "out_channels": 1,   "kernel_size": [1, 1]},
+        ],
+    }, detail_level="summary")
+    labels = "\n".join(s.label for s in spec.layers)
+    assert "Decoder" in labels and "Encoder" in labels, (
+        f"Encoder + Decoder must appear in U-Net summary; got: {labels!r}"
+    )
+    assert "concat collapsed" in labels.lower() or "concat" in labels.lower(), (
+        f"U-Net decoder must mention concat-collapsed; got: {labels!r}"
+    )
+
+
+def test_block_label_does_not_use_unsafe_2cv_abbreviation():
+    """Block summary labels must never use '2cv'/'4cv' abbreviation."""
+    spec = nsx.build_nnsvg_spec({
+        "model_name": "vgg",
+        "layers": (
+            [{"name": "input", "kind": "input", "shape": [1, 3, 224, 224]}]
+            + [{"name": f"c{i}", "kind": "conv", "out_channels": 64, "kernel_size": [3, 3]}
+               for i in range(8)]
+            + [{"name": "p1", "kind": "maxpool", "kernel_size": [2, 2]}]
+            + [{"name": "fc", "kind": "dense", "units": 1000}]
+        ),
+    }, detail_level="summary")
+    labels = "\n".join(s.label for s in spec.layers)
+    import re as _re
+    assert not _re.search(r"\b\d+cv\b", labels), (
+        f"Unsafe abbreviation 'Ncv' found in labels: {labels!r}"
+    )
+
+
+def test_compact_mode_uses_smaller_per_layer_budget():
+    """Compact mode should produce a narrower canvas than presentation mode."""
+    deep_spec = {
+        "model_name": "deep",
+        "layers": (
+            [{"name": "input", "kind": "input", "shape": [1, 3, 224, 224]}]
+            + [{"name": f"c{i}", "kind": "conv", "out_channels": 64, "kernel_size": [3, 3]}
+               for i in range(8)]
+            + [{"name": "fc", "kind": "dense", "units": 1000}]
+        ),
+    }
+    spec_default = nsx.build_nnsvg_spec(deep_spec, width=600)
+    spec_compact = nsx.build_nnsvg_spec(deep_spec, width=600, compact=True)
+    assert spec_compact.width <= spec_default.width, (
+        f"compact width {spec_compact.width} should not exceed default {spec_default.width}"
+    )
+
+
+def test_debug_json_preserves_dropout_layers(tmp_path: Path):
+    """Debug JSON must preserve Dropout layers absorbed into compact badges."""
+    out = tmp_path / "drop_debug.json"
+    nsx.save_debug_json(out, _cnn_with_bn_dropout_spec())
+    data = json.loads(out.read_text())
+    kinds = [s["kind"] for s in data["layers"]]
+    assert "dropout" in kinds, f"Dropout missing from debug JSON: {kinds}"
+    assert "batch_norm" in kinds, f"BatchNorm missing from debug JSON: {kinds}"

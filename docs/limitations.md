@@ -20,10 +20,23 @@ column per layer.  NN-SVG does not have native support for:
 - encoder-decoder paths (U-Net)
 - recurrent loops
 - attention blocks rendered as graphs
-- arbitrary custom operations
+- arbitrary custom DAG operations
 
 NeuroSchemaX does **not** fake support for these structures.  It renders the
-nearest sequential approximation honestly, with explicit warnings.
+nearest sequential approximation honestly, with explicit on-diagram markers
+and warnings.
+
+## Three honest output levels
+
+| Level | When | What you see |
+|---|---|---|
+| **1. Exact** | MLPs, small CNNs, sequential VGG/AlexNet-style CNNs | NN-SVG diagram with operation-aware labels |
+| **2. Architecture-aware summary** | Large CNNs, ResNet-like, U-Net-like, Transformer-like | Labeled rectangular blocks with `+skip collapsed`, `concat collapsed`, `[MH-Attn]`, `[FFN]` markers |
+| **3. Diagnostic page** | `transformer_mode="unsupported"` | A wide labeled block explaining what was detected and directing the user to the debug JSON or to `block_summary` |
+
+Level 2 is **approximate by construction** — the diagram itself signals
+that skip / concat / attention internals are not drawn.  Level 3 is the
+explicit "this cannot be rendered exactly" page.
 
 ## How approximate rendering works
 
@@ -32,36 +45,45 @@ When a model cannot be represented exactly, NeuroSchemaX:
 1. **Picks the closest NN-SVG family** for the sequential backbone.
 2. **Skips structural ops** (Add, Concat, Multiply, Upsample) — they are not
    neuron columns and should not appear as such.
-3. **Shows an amber warning badge** in the HTML explaining exactly what was
+3. **Surfaces supporting ops as inline badges** (`+BN`, `+LN`, `+Drop 0.5`)
+   so they remain visible without crowding the diagram.
+4. **Shows an amber warning badge** in the HTML explaining exactly what was
    approximated.
-4. **Reports reduced confidence** — `recommend_view()` returns
+5. **Reports reduced confidence** — `recommend_view()` returns
    `"confidence": "medium"` or `"low"` and `"is_approximate": true`.
-5. **Preserves the full graph** in the debug-JSON export.
+6. **Preserves the full graph** in the debug-JSON export.
 
 The approximate diagram is still readable and useful for understanding layer
 types, channels, and the general structure.  It just does not show skip
-connections or branches.
+connections or branches as curved edges.
 
 ## Fidelity table
 
 | Model type | Rendered as | Visual fidelity | Where the rest is |
 |---|---|---|---|
-| MLP / dense network | FCNN | High | — |
-| Small CNN (≤ 3 convs) | LeNet | High | — |
-| VGG-style deep CNN | AlexNet | High | — |
-| ResNet / residual blocks | AlexNet backbone | Approximate | Skip links in debug JSON |
-| U-Net / encoder-decoder | AlexNet backbone | Approximate | Decoder branches in debug JSON |
-| Transformer / attention | FCNN nodes | Approximate | Attention blocks in debug JSON |
-| LSTM / GRU / RNN | FCNN nodes | Approximate | Recurrent structure in debug JSON |
-| Object-detection head | AlexNet backbone | Approximate | Detection branches in debug JSON |
-| Unknown ops | Shown as generic nodes | Low | Raw op types in debug JSON |
+| MLP / dense network | FCNN | **Exact** | — |
+| Small CNN (≤ 3 convs) | LeNet | **Exact** | — |
+| VGG-style deep CNN | AlexNet | **Exact** | — |
+| ResNet / residual blocks | AlexNet backbone *or* `Stem → Residual Block N (+skip collapsed) → Head` summary | **Approximate** | Skip links in debug JSON |
+| U-Net / encoder-decoder | AlexNet backbone *or* `Encoder → Bottleneck → Decoder → Segmentation Head` summary | **Approximate** | Decoder branches + concat in debug JSON |
+| Transformer / attention | Block-level rectangle summary (`block_summary`) or diagnostic page (`unsupported`) | **Approximate** | All layers + attention attributes in debug JSON |
+| LSTM / GRU / RNN | Block-level sequence | **Approximate** | All layers in debug JSON |
+| Object-detection head | AlexNet backbone | **Approximate** | Detection branches in debug JSON |
+| Unknown ops | Generic nodes / skipped | **Low** | Raw op types in debug JSON |
+
+We do **not** claim:
+- exact Transformer attention flow
+- exact ResNet skip-edge drawing
+- exact U-Net encoder-decoder skip topology
+- arbitrary DAG rendering
 
 ## Debug JSON preserves what the diagram cannot show
 
 Running `export-debug-json` (or calling `save_debug_json()`) produces a
 verbose JSON file that includes:
 
-- all layers with their raw op types and attributes
+- all layers with their raw op types and attributes (heads, d_model, dropout
+  rate, kernel/stride/padding, …)
 - skip connections and merge nodes detected in the graph
 - shape information for every tensor where available
 - confidence scores per layer

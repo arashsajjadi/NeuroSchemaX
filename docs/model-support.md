@@ -42,11 +42,16 @@ See `recommend_view()` for the full reasoning including a `reason` string.
 
 ## Known limitations
 
-- Skip connections (residual links) are not rendered visually; they are
-  captured in metadata/JSON only.
-- Attention (Transformer) and recurrent (LSTM/GRU) layers are approximated
-  as FCNN nodes.
-- Encoder-decoder (U-Net) architectures are rendered as a linear sequence.
-- Branching / multi-path topologies collapse to a single path.
+- Skip / residual connections are **not drawn**; in summary mode each
+  Residual Block is labeled `+skip collapsed` so it is visible that links
+  were dropped.  Full graph stays in `export-debug-json`.
+- Attention (Transformer) and recurrent (LSTM/GRU) layers are rendered as a
+  **block-level rectangle sequence** (`transformer_mode="block_summary"`),
+  not as exact attention/Q/K/V graphs.  Use `transformer_mode="unsupported"`
+  to opt into a diagnostic page instead of an approximate summary.
+- Encoder-decoder (U-Net) architectures are rendered as
+  `Encoder → Bottleneck → Decoder → Segmentation Head` blocks with
+  `concat collapsed` markers — concat / upsample edges are not drawn.
+- Branching / multi-path topologies collapse to a single sequential path.
 
-See [limitations.md](limitations.md) for the full list.
+See [limitations.md](limitations.md) for the full honesty table.
