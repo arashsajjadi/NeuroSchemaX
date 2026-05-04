@@ -18,6 +18,7 @@ from .family_recognizer import recommend_family
 from .op_normalizer import normalize_op
 from .shape_normalizer import (
     infer_channels_from_shape,
+    infer_sequential_shapes,
     infer_units_from_shape,
     propagate_shapes,
 )
@@ -53,6 +54,7 @@ def normalize(graph: GraphIR) -> SemanticArchitecture:
 
     # 2. Shape propagation and inference
     propagate_shapes(layers)
+    infer_sequential_shapes(layers)   # lightweight spatial inference for manual specs
     for layer in layers:
         infer_units_from_shape(layer)
         infer_channels_from_shape(layer)

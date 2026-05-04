@@ -41,10 +41,25 @@ _SKIP_IN_ALL = frozenset({
     LayerKind.GROUP_NORM,
     LayerKind.INSTANCE_NORM,
     LayerKind.PAD,
-    # Merge ops: structural but not a neuron column
+    # Merge ops: structural, not a neuron column
     LayerKind.ADD,
     LayerKind.CONCAT,
     LayerKind.MULTIPLY,
+})
+
+# Ops absorbed into a preceding Transformer block during block-level mapping.
+_TRANSFORMER_ABSORB = frozenset({
+    LayerKind.LAYER_NORM,
+    LayerKind.BATCH_NORM,
+    LayerKind.GROUP_NORM,
+    LayerKind.ADD,
+    LayerKind.MULTIPLY,
+    LayerKind.DROPOUT,
+})
+
+_ACTIVATION_KINDS = frozenset({
+    LayerKind.RELU, LayerKind.GELU, LayerKind.SIGMOID,
+    LayerKind.TANH, LayerKind.SOFTMAX, LayerKind.ACTIVATION,
 })
 
 
@@ -62,8 +77,7 @@ def _color_for(kind: LayerKind) -> str:
     if kind in (LayerKind.BATCH_NORM, LayerKind.LAYER_NORM,
                 LayerKind.GROUP_NORM, LayerKind.INSTANCE_NORM):
         return _COLORS["norm"]
-    if kind in (LayerKind.ACTIVATION, LayerKind.RELU, LayerKind.SIGMOID,
-                LayerKind.TANH, LayerKind.SOFTMAX, LayerKind.GELU):
+    if kind in _ACTIVATION_KINDS:
         return _COLORS["activation"]
     if kind == LayerKind.ATTENTION:
         return _COLORS["attention"]
@@ -78,10 +92,9 @@ _MAX_LABEL_LEN = 20
 
 
 def _truncate(text: str, max_len: int = _MAX_LABEL_LEN) -> str:
-    """Truncate a label to *max_len* characters."""
     if len(text) <= max_len:
         return text
-    return text[: max_len - 1] + "…"  # … (ellipsis)
+    return text[: max_len - 1] + "…"
 
 
 def _make_label(layer: SemanticLayer, show_shapes: bool, max_len: int = _MAX_LABEL_LEN) -> str:
@@ -94,19 +107,122 @@ def _make_label(layer: SemanticLayer, show_shapes: bool, max_len: int = _MAX_LAB
     return _truncate(base, max_len)
 
 
+# ── Transformer block-level mapper ───────────────────────────────────────────
+
+def _map_transformer_blocks(
+    arch: SemanticArchitecture,
+    cfg: RenderConfig,
+) -> list[NNSVGLayerSpec]:
+    """Block-level approximation for Transformer/attention architectures.
+
+    Instead of rendering attention as neuron columns (misleading), groups
+    operations into labeled computation blocks.  Each block is rendered as
+    a small fixed-size column with a meaningful label and distinct colour.
+
+    This is explicitly an approximation: NN-SVG has no native Transformer
+    renderer.  The block sequence is correct; spatial attention relationships
+    are not drawn.
+    """
+    layers = arch.layers
+    specs: list[NNSVGLayerSpec] = []
+    i = 0
+
+    while i < len(layers):
+        layer = layers[i]
+        kind = layer.kind
+
+        if kind == LayerKind.INPUT:
+            specs.append(NNSVGLayerSpec(
+                layer_type="dense", label="Input", units=3, color=_COLORS["input"],
+            ))
+            i += 1
+
+        elif kind == LayerKind.EMBEDDING:
+            specs.append(NNSVGLayerSpec(
+                layer_type="dense", label="Embedding", units=3, color=_COLORS["dense"],
+            ))
+            i += 1
+
+        elif kind == LayerKind.ATTENTION:
+            # Absorb any immediately following Norm/Add/residual ops.
+            j = i + 1
+            while j < len(layers) and layers[j].kind in _TRANSFORMER_ABSORB:
+                j += 1
+            specs.append(NNSVGLayerSpec(
+                layer_type="dense", label="[Attention]", units=3, color=_COLORS["attention"],
+            ))
+            i = j
+
+        elif kind == LayerKind.DENSE:
+            # Absorb a complete feed-forward block:
+            # Dense + optional activation(s) + optional Dense + optional Norm/Add.
+            j = i + 1
+            while j < len(layers) and layers[j].kind in (
+                _ACTIVATION_KINDS | frozenset({LayerKind.DENSE, LayerKind.DROPOUT})
+            ):
+                j += 1
+            while j < len(layers) and layers[j].kind in _TRANSFORMER_ABSORB:
+                j += 1
+
+            # Decide label: last dense block → Classifier, otherwise FeedFwd.
+            remaining = [layers[k].kind for k in range(j, len(layers))]
+            is_classifier = all(
+                k in (_ACTIVATION_KINDS | frozenset({LayerKind.OUTPUT, LayerKind.SOFTMAX,
+                                                      LayerKind.FLATTEN, LayerKind.RESHAPE,
+                                                      LayerKind.UNKNOWN}))
+                for k in remaining
+            )
+            if is_classifier:
+                specs.append(NNSVGLayerSpec(
+                    layer_type="dense", label="Classifier", units=3, color=_COLORS["output"],
+                ))
+            else:
+                specs.append(NNSVGLayerSpec(
+                    layer_type="dense", label="FeedFwd", units=3, color=_COLORS["dense"],
+                ))
+            i = j
+
+        elif kind in (LayerKind.LSTM, LayerKind.GRU, LayerKind.RECURRENT):
+            j = i + 1
+            while j < len(layers) and layers[j].kind in _TRANSFORMER_ABSORB:
+                j += 1
+            specs.append(NNSVGLayerSpec(
+                layer_type="dense",
+                label=f"[{kind.name}]",
+                units=3,
+                color=_COLORS["recurrent"],
+            ))
+            i = j
+
+        else:
+            # Skip structural / passthrough ops not absorbed above.
+            i += 1
+
+    return specs
+
+
+# ── FCNN mapper ──────────────────────────────────────────────────────────────
+
 def _map_fcnn(arch: SemanticArchitecture, cfg: RenderConfig) -> list[NNSVGLayerSpec]:
-    """Map to FCNN: each significant layer becomes a column of neurons."""
+    """Map to FCNN: columns of neurons.
+
+    For Transformer/attention architectures, delegates to the block-level
+    mapper which avoids rendering attention as misleading neuron columns.
+    """
+    has_attention = any(lay.kind == LayerKind.ATTENTION for lay in arch.layers)
+    has_recurrent = any(
+        lay.kind in (LayerKind.LSTM, LayerKind.GRU, LayerKind.RECURRENT)
+        for lay in arch.layers
+    )
+    if has_attention or has_recurrent:
+        return _map_transformer_blocks(arch, cfg)
+
     specs: list[NNSVGLayerSpec] = []
     for layer in arch.layers:
         if layer.kind in _SKIP_IN_ALL:
             continue
-        # Reshape / Flatten — skip (not a neuron column)
-        if layer.kind in (LayerKind.FLATTEN, LayerKind.RESHAPE):
+        if layer.kind in (LayerKind.FLATTEN, LayerKind.RESHAPE, LayerKind.UPSAMPLE):
             continue
-        # Upsample — not a dense/conv column
-        if layer.kind == LayerKind.UPSAMPLE:
-            continue
-        # Unknown ops — skip to avoid noise
         if layer.kind == LayerKind.UNKNOWN:
             continue
 
@@ -116,14 +232,7 @@ def _map_fcnn(arch: SemanticArchitecture, cfg: RenderConfig) -> list[NNSVGLayerS
             if ints:
                 units = ints[-1]
         if units == 0:
-            # For attention / recurrent / embedding, use a reasonable default
-            if layer.kind == LayerKind.EMBEDDING:
-                units = 64
-            elif layer.kind in (LayerKind.ATTENTION, LayerKind.LSTM,
-                                 LayerKind.GRU, LayerKind.RECURRENT):
-                units = 32
-            else:
-                units = 10
+            units = 10
 
         specs.append(NNSVGLayerSpec(
             layer_type="dense",
@@ -134,8 +243,9 @@ def _map_fcnn(arch: SemanticArchitecture, cfg: RenderConfig) -> list[NNSVGLayerS
     return specs
 
 
+# ── CNN mappers ──────────────────────────────────────────────────────────────
+
 def _estimate_feature_map(layer: SemanticLayer) -> tuple[int, int]:
-    """Estimate feature-map spatial dims from output shape."""
     shape = layer.output_shape
     ints = [d for d in shape if isinstance(d, int) and d > 0]
     if len(ints) >= 3:
@@ -145,8 +255,13 @@ def _estimate_feature_map(layer: SemanticLayer) -> tuple[int, int]:
     return 0, 0
 
 
+# Dense (fc/classifier) units capped to prevent visual domination in CNN views.
+_MAX_DENSE_UNITS_LENET   = 10
+_MAX_DENSE_UNITS_ALEXNET =  8
+
+
 def _map_lenet(arch: SemanticArchitecture, cfg: RenderConfig) -> list[NNSVGLayerSpec]:
-    """Map to LeNet view: conv layers show feature maps, dense layers show neurons."""
+    """Map to LeNet view: conv/pool layers as feature maps, dense as neurons."""
     specs: list[NNSVGLayerSpec] = []
     for layer in arch.layers:
         if layer.kind in _SKIP_IN_ALL:
@@ -182,11 +297,11 @@ def _map_lenet(arch: SemanticArchitecture, cfg: RenderConfig) -> list[NNSVGLayer
                 color=_color_for(layer.kind),
             ))
         elif layer.kind == LayerKind.DENSE:
-            units = layer.units or 10
+            units = min(layer.units or 10, _MAX_DENSE_UNITS_LENET)
             specs.append(NNSVGLayerSpec(
                 layer_type="dense",
                 label=_make_label(layer, cfg.show_shapes),
-                units=min(units, 256),
+                units=units,
                 color=_color_for(layer.kind),
             ))
         elif layer.kind == LayerKind.INPUT:
@@ -203,37 +318,93 @@ def _map_lenet(arch: SemanticArchitecture, cfg: RenderConfig) -> list[NNSVGLayer
                     color=_color_for(layer.kind),
                 ))
         else:
-            # Attention / recurrent / embedding → show as dense column
-            units = layer.units or layer.channels or 0
-            if units == 0 and layer.output_shape:
-                ints = [d for d in layer.output_shape if isinstance(d, int) and d > 0]
-                if ints:
-                    units = ints[-1]
-            if units == 0:
-                units = 32
+            # Attention / recurrent / embedding → small dense block
+            units = min(layer.units or layer.channels or 8, _MAX_DENSE_UNITS_LENET)
             specs.append(NNSVGLayerSpec(
                 layer_type="dense",
                 label=_make_label(layer, cfg.show_shapes),
-                units=min(units, 256),
+                units=units,
                 color=_color_for(layer.kind),
             ))
     return specs
 
 
 def _map_alexnet(arch: SemanticArchitecture, cfg: RenderConfig) -> list[NNSVGLayerSpec]:
-    """Map to AlexNet view: like LeNet but expects more layers."""
-    return _map_lenet(arch, cfg)
+    """Map to AlexNet view: like LeNet but with tighter dense caps for deep nets."""
+    specs: list[NNSVGLayerSpec] = []
+    for layer in arch.layers:
+        if layer.kind in _SKIP_IN_ALL:
+            continue
+        if layer.kind in (LayerKind.FLATTEN, LayerKind.RESHAPE, LayerKind.UPSAMPLE):
+            continue
+        if layer.kind == LayerKind.UNKNOWN:
+            continue
+
+        if layer.kind in (LayerKind.CONV, LayerKind.DEPTHWISE_CONV, LayerKind.TRANSPOSED_CONV):
+            h, w = _estimate_feature_map(layer)
+            specs.append(NNSVGLayerSpec(
+                layer_type="conv",
+                label=_make_label(layer, cfg.show_shapes),
+                channels=layer.channels or 1,
+                kernel_size=layer.kernel_size[0] if layer.kernel_size else 3,
+                stride=layer.stride[0] if layer.stride else 1,
+                feature_map_width=w or 20,
+                feature_map_height=h or 20,
+                color=_color_for(layer.kind),
+            ))
+        elif layer.kind in (LayerKind.POOL_MAX, LayerKind.POOL_AVG, LayerKind.POOL_GLOBAL):
+            h, w = _estimate_feature_map(layer)
+            prev_channels = specs[-1].channels if specs else 1
+            specs.append(NNSVGLayerSpec(
+                layer_type="pool",
+                label=_make_label(layer, cfg.show_shapes),
+                channels=layer.channels or prev_channels,
+                kernel_size=layer.kernel_size[0] if layer.kernel_size else 2,
+                stride=layer.stride[0] if layer.stride else 2,
+                feature_map_width=w or 10,
+                feature_map_height=h or 10,
+                color=_color_for(layer.kind),
+            ))
+        elif layer.kind == LayerKind.DENSE:
+            # Cap classifier columns so they don't dominate deep CNN diagrams.
+            units = min(layer.units or 8, _MAX_DENSE_UNITS_ALEXNET)
+            specs.append(NNSVGLayerSpec(
+                layer_type="dense",
+                label=_make_label(layer, cfg.show_shapes),
+                units=units,
+                color=_color_for(layer.kind),
+            ))
+        elif layer.kind == LayerKind.INPUT:
+            if layer.output_shape:
+                h, w = _estimate_feature_map(layer)
+                ints = [d for d in layer.output_shape if isinstance(d, int)]
+                ch = ints[1] if len(ints) >= 4 else (ints[0] if len(ints) >= 3 else 1)
+                specs.append(NNSVGLayerSpec(
+                    layer_type="input",
+                    label="input",
+                    channels=ch,
+                    feature_map_width=w or 20,
+                    feature_map_height=h or 20,
+                    color=_color_for(layer.kind),
+                ))
+        else:
+            units = min(layer.units or layer.channels or 6, _MAX_DENSE_UNITS_ALEXNET)
+            specs.append(NNSVGLayerSpec(
+                layer_type="dense",
+                label=_make_label(layer, cfg.show_shapes),
+                units=units,
+                color=_color_for(layer.kind),
+            ))
+    return specs
 
 
 # ── Auto-sizing ──────────────────────────────────────────────────────────────
 
 _MIN_PX_PER_LAYER = 80
-_IDEAL_PX_PER_LAYER = 100
 
 
 def _auto_width(n_layers: int, configured_width: int) -> int:
-    """Ensure the canvas is wide enough to give each layer breathing room."""
-    needed = n_layers * _MIN_PX_PER_LAYER + 120  # margins
+    needed = n_layers * _MIN_PX_PER_LAYER + 120
     return max(configured_width, needed)
 
 
@@ -258,8 +429,6 @@ def map_to_nnsvg(
     if not layers:
         layers = [NNSVGLayerSpec(layer_type="dense", label="(empty)", units=1)]
 
-    # Auto-size canvas width if the user did not explicitly set it.
-    # We consider it user-set if it differs from the RenderConfig default (1200).
     auto_width = _auto_width(len(layers), config.width)
 
     return NNSVGSpec(
