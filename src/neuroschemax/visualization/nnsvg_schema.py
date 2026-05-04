@@ -58,6 +58,9 @@ class NNSVGSpec:
     color_fill: str | None = None
     color_stroke: str | None = None
 
+    # Optional subtitle (rendered below the title, subtle metadata line)
+    subtitle: str = ""
+
     # Metadata (not rendered, but preserved in export)
     model_name: str = ""
     warnings: list[str] = field(default_factory=list)
@@ -80,6 +83,7 @@ class NNSVGSpec:
             "fontSize": self.font_size,
             "colorFill": self.color_fill,
             "colorStroke": self.color_stroke,
+            "subtitle": self.subtitle,
             "modelName": self.model_name,
             "warnings": self.warnings,
         }

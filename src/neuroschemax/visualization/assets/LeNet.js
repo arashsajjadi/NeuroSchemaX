@@ -89,16 +89,42 @@
 
         if (spec.showLabels && layer.label) {
           if (ch === 1) {
-            // Single-channel block (e.g. Transformer stage): label centered inside.
-            var textY = baseY + fmH / 2 + fontSize * 0.38;
-            var t = U.el("text", {
-              x: x, y: textY,
-              "text-anchor": "middle",
-              "font-size": fontSize,
-              "font-family": spec.fontFamily || "sans-serif",
-              fill: "#333", "font-weight": "600"
-            }, svg);
-            t.textContent = layer.label;
+            // Single-channel block (e.g. Transformer stage): label(s) centered
+            // inside the rectangle.  Labels may embed '\n' for multi-line output.
+            // Font size is auto-scaled so the longest line fits within the box.
+            var rawLabel = layer.label || "";
+            var lines = rawLabel.split('\n').filter(function(s) { return s.length > 0; });
+            if (lines.length === 0) lines = [rawLabel];
+
+            var maxLineLen = 0;
+            for (var li = 0; li < lines.length; li++) {
+              if (lines[li].length > maxLineLen) maxLineLen = lines[li].length;
+            }
+
+            var availW = fmW - 8;  // 4 px padding each side
+            var textFontSize = fontSize;
+            if (maxLineLen > 0) {
+              var estW = maxLineLen * fontSize * 0.62;
+              if (estW > availW) {
+                textFontSize = Math.max(8, Math.floor(availW / (maxLineLen * 0.62)));
+              }
+            }
+
+            var lineH = textFontSize * 1.35;
+            var totalTextH = lineH * lines.length;
+            var startY = baseY + (fmH - totalTextH) / 2 + textFontSize;
+
+            for (var li = 0; li < lines.length; li++) {
+              U.el("text", {
+                x: x,
+                y: startY + lineH * li,
+                "text-anchor": "middle",
+                "font-size": textFontSize,
+                "font-family": spec.fontFamily || "sans-serif",
+                fill: "#222",
+                "font-weight": "600"
+              }, svg).textContent = lines[li];
+            }
           } else {
             // Multi-channel stack: label below the diagram.
             U.label(svg, x, h - 20, layer.label, spec);

@@ -265,16 +265,46 @@ nsx.doctor()                          # dict with status/version/assets/deps/mes
 
 ### Rendering keyword arguments
 
-| Argument | Type | Description |
-|---|---|---|
-| `theme` | `str` | `"paper"`, `"thesis"`, `"debug"`, `"readme"` |
-| `style` | `str` | Force `"fcnn"`, `"lenet"`, or `"alexnet"` |
-| `width` | `int` | Canvas width in pixels |
-| `height` | `int` | Canvas height in pixels |
-| `title` | `str` | Diagram title |
-| `show_labels` | `bool` | Show layer name labels |
-| `show_shapes` | `bool` | Show shape annotations |
-| `compact` | `bool` | Use compact layout |
+These are accepted by every rendering function and `nsx.figure()`:
+
+| Argument | Type | Default | Description |
+|---|---|---|---|
+| `theme` | `str` | `"paper"` | `"paper"`, `"thesis"`, `"debug"`, `"readme"` |
+| `style` | `str` | auto | Force `"fcnn"`, `"lenet"`, or `"alexnet"` |
+| `figsize` | `(float, float)` | — | Matplotlib-style: `width = round(w * dpi)`, `height = round(h * dpi)` |
+| `dpi` | `float` | `100` | Pixels per inch used with `figsize` |
+| `width` | `int` | `1200` | Canvas width in pixels (overrides `figsize`) |
+| `height` | `int` | `700` | Canvas height in pixels (overrides `figsize`) |
+| `title` | `str` | model name | Diagram title shown above the diagram |
+| `show_labels` | `bool` | `True` | Show layer labels |
+| `show_shapes` | `bool` | `True` | Show shape dimensions in labels |
+| `compact` | `bool` | `False` | Use compact layout (reduces spacing) |
+| `label_mode` | `str` | `"auto"` | `"auto"`, `"name"`, `"compact"`, `"shape"`, `"full"` |
+| `detail_level` | `str` | `"auto"` | `"auto"`, `"summary"`, `"full"` |
+| `show_activations` | `bool` | `True` | Fuse activation names into preceding layer labels |
+| `transformer_mode` | `str` | `"block_summary"` | `"block_summary"` or `"unsupported"` |
+| `approximate_mode` | `str` | `"warn"` | `"warn"`, `"error"`, or `"allow"` |
+
+**`label_mode`** controls what each layer label shows:
+- `auto` — compact for small models, name-only for large models
+- `name` — layer name only (never overlaps)
+- `compact` — short name + most-relevant dimension (`conv1 26x26`, `fc1 128`)
+- `shape` — shape only, no name
+- `full` — name + complete shape string (may overlap for large models)
+
+**`detail_level`** controls how many layers are shown:
+- `auto` — full for small models (≤ 12 spec layers), grouped for larger
+- `summary` — groups repeated conv/pool sequences into blocks; ResNet/U-Net get block labels
+- `full` — every individual layer shown
+
+**`transformer_mode`** controls Transformer/recurrent rendering:
+- `block_summary` — sequences labeled rectangular blocks via LeNet renderer (default)
+- `unsupported` — shows a "not supported" placeholder and refers to debug JSON
+
+**`approximate_mode`** controls how approximate renderings are handled:
+- `warn` — amber warning badge shown in HTML (default)
+- `error` — raises `RenderError` before rendering an approximate diagram
+- `allow` — suppresses warning badges (silent approximation)
 
 ---
 
@@ -413,9 +443,14 @@ Rules (in priority order):
 Skip connections are detected from both ONNX graph edges and explicit Add/Concat layers
 in manual specs.
 
-Note: the `family` field in `recommend_view()` reflects the semantic architecture
-family (e.g. `"fcnn"` for Transformers), not the rendering family used in the diagram.
-Transformers are rendered as `"lenet"` (rect blocks) regardless of the semantic family.
+Notes:
+- The `family` field in `recommend_view()` reflects the semantic architecture type,
+  not the rendering family.  Transformers (`"fcnn"` semantically) are rendered using
+  the LeNet renderer (rect blocks) when `transformer_mode="block_summary"`.
+- Use `transformer_mode="unsupported"` to get an explicit "not supported" placeholder
+  instead of the block summary.
+- The block summary is honest: labels tell you the operation type; Q/K/V flows,
+  residual paths, and repeated-block structure are not drawn.
 
 ---
 

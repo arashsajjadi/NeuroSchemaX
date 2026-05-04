@@ -72,6 +72,37 @@ class RenderConfig:
     # ── determinism ─────────────────────────────────────────────────────
     seed: int | None = None
 
+    # ── display quality controls ────────────────────────────────────────
+    # label_mode: "auto" | "name" | "compact" | "shape" | "full"
+    #   auto     — compact for small models, name for large models
+    #   name     — layer name only (never overlaps)
+    #   compact  — short name + most-relevant dimension (HxW or units)
+    #   shape    — shape only (HxW or units), no name
+    #   full     — name + full shape string (may overlap for large models)
+    label_mode: str = "auto"
+
+    # detail_level: "auto" | "summary" | "full"
+    #   auto     — full for small models (≤ 12 spec layers), summary for larger
+    #   summary  — group repeated conv/pool blocks; ResNet/U-Net get block labels
+    #   full     — every individual layer shown
+    detail_level: str = "auto"
+
+    # show_activations: whether to fuse activation names into preceding labels
+    #   True  → fc1 128 +ReLU (activation fused, no separate column)
+    #   False → fc1 128 (activations completely invisible in diagram)
+    show_activations: bool = True
+
+    # transformer_mode: how Transformer/attention-containing architectures are rendered
+    #   block_summary — single-rectangle blocks per stage via LeNet renderer (default)
+    #   unsupported   — render a clear "not supported" placeholder
+    transformer_mode: str = "block_summary"
+
+    # approximate_mode: how approximate renderings are communicated
+    #   warn  — show amber warning badge in HTML (default)
+    #   error — raise RenderError before rendering an approximate diagram
+    #   allow — suppress warning badges (silent approximation)
+    approximate_mode: str = "warn"
+
     # ── extra pass-through ──────────────────────────────────────────────
     options: dict[str, Any] = field(default_factory=dict)
 

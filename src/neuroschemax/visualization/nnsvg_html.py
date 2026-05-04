@@ -79,11 +79,18 @@ def generate_html(spec: NNSVGSpec) -> str:
     color: #e65100;
     margin-right: 4px;
   }}
+  .nnsvg-subtitle {{
+    font-size: 11px;
+    color: #888;
+    margin-top: 2px;
+    letter-spacing: 0.3px;
+  }}
 </style>
 </head>
 <body>
 <div class="nnsvg-header">
 {"<div class='nnsvg-title'>" + _escape_html(title) + "</div>" if title else ""}
+{"<div class='nnsvg-subtitle'>" + _escape_html(spec.subtitle) + "</div>" if spec.subtitle else ""}
 {_render_warnings_html(spec.warnings)}
 </div>
 <div id="diagram"></div>
