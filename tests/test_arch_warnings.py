@@ -2,11 +2,8 @@
 
 from __future__ import annotations
 
-import pytest
-
 import neuroschemax as nsx
-from neuroschemax.core.enums import ConfidenceLevel, LayerKind, RenderFamily
-
+from neuroschemax.core.enums import ConfidenceLevel, RenderFamily
 
 # ---------------------------------------------------------------------------
 # Helper specs

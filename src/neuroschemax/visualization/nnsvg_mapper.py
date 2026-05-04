@@ -130,15 +130,112 @@ def _act_name(kind: LayerKind) -> str:
     }.get(kind, "Act")
 
 
+def _fmt_kern(k: list[int] | None) -> str:
+    """Format kernel_size as 'k3' (square) or 'k3x5' (non-square)."""
+    if not k:
+        return ""
+    if len(k) == 1 or k[0] == k[1]:
+        return f"k{k[0]}"
+    return "k" + "x".join(str(v) for v in k)
+
+
+def _fmt_stride(s: list[int] | None) -> str:
+    """Format stride as 's2' only when stride is non-trivial (> 1)."""
+    if not s or all(v == 1 for v in s):
+        return ""
+    if len(s) == 1 or s[0] == s[1]:
+        return f"s{s[0]}"
+    return "s" + "x".join(str(v) for v in s)
+
+
+def _compact_op_label(layer: SemanticLayer) -> str:
+    """Operation-aware compact label used by label_mode='compact'/'auto'.
+
+    Produces professional labels like ``Conv 64 k3``, ``MaxP k2 s2``,
+    ``Dense 128``, ``GAP``, ``Input 28x28``, ``[MH-Attn]`` — the operation
+    type and key parameters, not the arbitrary layer name.
+    """
+    kind = layer.kind
+
+    if kind in _CONV_KINDS:
+        parts = ["Conv"]
+        if layer.channels:
+            parts.append(str(layer.channels))
+        kern = _fmt_kern(layer.kernel_size)
+        if kern:
+            parts.append(kern)
+        strd = _fmt_stride(layer.stride)
+        if strd:
+            parts.append(strd)
+        return " ".join(parts)
+
+    if kind == LayerKind.POOL_MAX:
+        parts = ["MaxP"]
+        kern = _fmt_kern(layer.kernel_size)
+        if kern:
+            parts.append(kern)
+        strd = _fmt_stride(layer.stride)
+        if strd:
+            parts.append(strd)
+        return " ".join(parts)
+
+    if kind == LayerKind.POOL_AVG:
+        parts = ["AvgP"]
+        kern = _fmt_kern(layer.kernel_size)
+        if kern:
+            parts.append(kern)
+        strd = _fmt_stride(layer.stride)
+        if strd:
+            parts.append(strd)
+        return " ".join(parts)
+
+    if kind == LayerKind.POOL_GLOBAL:
+        return "GAP"
+
+    if kind == LayerKind.DENSE:
+        return f"Dense {layer.units}" if layer.units else "Dense"
+
+    if kind == LayerKind.INPUT:
+        shape = layer.output_shape
+        ints = [d for d in shape if isinstance(d, int) and d > 0]
+        if len(ints) >= 3:
+            hw = "x".join(str(d) for d in ints[-2:])
+            return f"Input {hw}"
+        if ints:
+            return f"Input {ints[-1]}"
+        return "Input"
+
+    if kind == LayerKind.ATTENTION:
+        return "[MH-Attn]"
+
+    if kind in _RECURRENT_KINDS:
+        return f"[{kind.name}]"
+
+    if kind == LayerKind.EMBEDDING:
+        return "Emb"
+
+    if kind == LayerKind.UPSAMPLE:
+        scale = layer.attributes.get("scale_factor", layer.attributes.get("scales"))
+        if scale is not None:
+            if isinstance(scale, (int, float)):
+                return f"Up x{int(scale)}"
+            if isinstance(scale, (list, tuple)) and len(scale) >= 2:
+                return f"Up x{int(scale[-1])}"
+        return "Upsample"
+
+    # Fallback: use the layer name for unrecognised op types.
+    return layer.name or kind.name.lower()
+
+
 def _make_label(layer: SemanticLayer, label_mode: str) -> str:
     """Generate a display label for *layer* according to *label_mode*.
 
     Modes:
-      name    — layer name only; never overlaps
-      shape   — most-relevant dimension only (HxW or units)
-      compact — short name + most-relevant dimension
-      full    — name + complete shape string
-      auto    — compact (resolved before calling this function)
+      name    — layer name only; shortest, never overlaps
+      shape   — most-relevant dimension (HxW or units), no name
+      compact — operation-aware: ``Conv 64 k3``, ``Dense 128``, ``GAP``
+      full    — layer name + complete shape string
+      auto    — resolved to compact or name before this function is called
     """
     name = layer.name or layer.kind.name.lower()
     shape = layer.output_shape
@@ -159,13 +256,8 @@ def _make_label(layer: SemanticLayer, label_mode: str) -> str:
             return _truncate(f"{name} " + "x".join(str(d) for d in ints))
         return _truncate(name)
 
-    # "compact" (and "auto" after resolution)
-    if len(ints) >= 3:
-        hw = "x".join(str(d) for d in ints[-2:])
-        return _truncate(f"{name} {hw}")
-    if ints:
-        return _truncate(f"{name} {ints[-1]}")
-    return _truncate(name)
+    # "compact" (and "auto" after resolution) → operation-aware format
+    return _truncate(_compact_op_label(layer))
 
 
 def _effective_label_mode(cfg: RenderConfig, arch_layer_count: int) -> str:
@@ -258,10 +350,13 @@ def _color_for(kind: LayerKind) -> str:
 # ── Detail-level summary grouping ────────────────────────────────────────────
 
 def _summarize_sequential(spec_layers: list[NNSVGLayerSpec]) -> list[NNSVGLayerSpec]:
-    """Group consecutive conv/pool layers into labeled 'Block N' entries.
+    """Group consecutive conv/pool layers into informative 'Block N' ch=1 boxes.
 
-    Dense/classifier layers are collapsed into a single 'Classifier' block.
-    Input layers are preserved as-is.
+    Uses ch=1 (single-rectangle) blocks so LeNet.js can render multi-line
+    labels inside the box.  Each block label shows the conv count, output
+    channels, and a ↓ marker when a pool layer is present.
+
+    Example block label:   ``Block 2\\n4cv 128ch ↓``
     """
     result: list[NNSVGLayerSpec] = []
     i = 0
@@ -275,35 +370,58 @@ def _summarize_sequential(spec_layers: list[NNSVGLayerSpec]) -> list[NNSVGLayerS
             result.append(l)
             i += 1
 
-        elif l.layer_type in ("conv", "pool"):
+        elif l.layer_type == "conv":
+            # Absorb consecutive convs, then include one pool if present.
+            # Splitting at pool boundaries gives meaningful per-stage blocks.
             j = i + 1
-            while j < n and spec_layers[j].layer_type in ("conv", "pool"):
+            while j < n and spec_layers[j].layer_type == "conv":
                 j += 1
+            has_pool = j < n and spec_layers[j].layer_type == "pool"
+            if has_pool:
+                j += 1  # include the pool in this block
+
             block_num += 1
-            # Use the deepest conv in this group for visual properties.
-            last_conv = next(
-                (s for s in reversed(spec_layers[i:j]) if s.layer_type == "conv"),
-                spec_layers[i],
-            )
+            group = spec_layers[i: j - (1 if has_pool else 0)]
+            conv_layers = [s for s in group if s.layer_type == "conv"]
+            last_conv = conv_layers[-1] if conv_layers else group[-1]
+            n_conv = len(conv_layers)
+
+            line2_parts: list[str] = []
+            if n_conv:
+                line2_parts.append(f"{n_conv}cv")
+            if last_conv.channels:
+                line2_parts.append(f"{last_conv.channels}ch")
+            if has_pool:
+                line2_parts.append("↓")
+            label = f"Block {block_num}"
+            if line2_parts:
+                label += "\n" + " ".join(line2_parts)
+
             result.append(NNSVGLayerSpec(
                 layer_type="conv",
-                label=f"Block {block_num}",
-                channels=min(last_conv.channels, 5),
-                feature_map_width=max(last_conv.feature_map_width, 14),
-                feature_map_height=max(last_conv.feature_map_height, 14),
+                label=label,
+                channels=1,          # ch=1 = box rendering with inside label
+                feature_map_width=80,
+                feature_map_height=72,
                 color=last_conv.color,
             ))
             i = j
 
+        elif l.layer_type == "pool":
+            # Standalone pool not absorbed by a preceding conv group — skip it.
+            i += 1
+
         elif l.layer_type == "dense":
-            # All remaining dense layers → single Classifier block.
+            # All remaining dense layers → single Classifier box.
             result.append(NNSVGLayerSpec(
-                layer_type="dense",
+                layer_type="conv",
                 label="Classifier",
-                units=min(l.units, _MAX_DENSE_UNITS_ALEXNET),
+                channels=1,
+                feature_map_width=72,
+                feature_map_height=60,
                 color=_COLORS["output"],
             ))
-            break  # consume the rest
+            break
 
         else:
             result.append(l)
@@ -316,11 +434,11 @@ def _summarize_residual(
     spec_layers: list[NNSVGLayerSpec],
     arch: SemanticArchitecture,
 ) -> list[NNSVGLayerSpec]:
-    """Block summary for ResNet/U-Net style architectures with merge ops.
+    """Block summary for ResNet/U-Net architectures with merge ops.
 
-    Produces:
+    Produces ch=1 box blocks with multi-line informative labels:
       ResNet: Input → Stem → Res Block 1 → ... → Res Block N → Head
-      U-Net:  Input → Encoder → Bottleneck → Decoder → Output
+      U-Net:  Input → Encoder\\n↓conv → Bottleneck → Decoder\\n↑conv → Output
     """
     has_concat = any(lay.kind == LayerKind.CONCAT for lay in arch.layers)
     result: list[NNSVGLayerSpec] = []
@@ -330,50 +448,47 @@ def _summarize_residual(
         result.append(spec_layers[0])
 
     if has_concat:
-        # U-Net style encoder-decoder
+        # U-Net style encoder-decoder with multi-line box blocks.
         result += [
             NNSVGLayerSpec(
-                layer_type="conv", label="Encoder",
-                channels=4, feature_map_width=44, feature_map_height=72,
+                layer_type="conv", label="Encoder\n↓conv",
+                channels=1, feature_map_width=80, feature_map_height=80,
                 color=_COLORS["conv"],
             ),
             NNSVGLayerSpec(
                 layer_type="conv", label="Bottleneck",
-                channels=5, feature_map_width=24, feature_map_height=38,
+                channels=1, feature_map_width=72, feature_map_height=60,
                 color=_COLORS["pool"],
             ),
             NNSVGLayerSpec(
-                layer_type="conv", label="Decoder",
-                channels=4, feature_map_width=44, feature_map_height=72,
+                layer_type="conv", label="Decoder\n↑conv",
+                channels=1, feature_map_width=80, feature_map_height=80,
                 color=_COLORS["conv"],
             ),
+            NNSVGLayerSpec(
+                layer_type="conv", label="Output",
+                channels=1, feature_map_width=64, feature_map_height=56,
+                color=_COLORS["output"],
+            ),
         ]
-        has_dense = any(l.layer_type == "dense" for l in spec_layers)
-        result.append(NNSVGLayerSpec(
-            layer_type="dense" if has_dense else "conv",
-            label="Output",
-            units=6, channels=1, feature_map_width=28, feature_map_height=44,
-            color=_COLORS["output"],
-        ))
     else:
-        # ResNet style
+        # ResNet style — group conv layers between Add ops.
         add_count = sum(1 for lay in arch.layers if lay.kind == LayerKind.ADD)
+        # Stem: ch=1 box so multi-line label renders inside
         result.append(NNSVGLayerSpec(
-            layer_type="conv", label="Stem",
-            channels=2, feature_map_width=30, feature_map_height=50,
+            layer_type="conv", label="Stem\nconv",
+            channels=1, feature_map_width=72, feature_map_height=64,
             color=_COLORS["conv"],
         ))
         for b in range(max(1, add_count)):
             result.append(NNSVGLayerSpec(
-                layer_type="conv", label=f"Res Block {b + 1}",
-                channels=3, feature_map_width=28, feature_map_height=46,
-                color=_COLORS["norm"],  # purple-ish to distinguish from plain conv
+                layer_type="conv", label=f"Res Block {b + 1}\n2×conv",
+                channels=1, feature_map_width=80, feature_map_height=80,
+                color=_COLORS["norm"],   # purple-ish marks residual blocks
             ))
-        has_dense = any(l.layer_type == "dense" for l in spec_layers)
         result.append(NNSVGLayerSpec(
-            layer_type="dense" if has_dense else "conv",
-            label="Head",
-            units=6, channels=1, feature_map_width=20, feature_map_height=32,
+            layer_type="conv", label="Head",
+            channels=1, feature_map_width=64, feature_map_height=56,
             color=_COLORS["output"],
         ))
 
@@ -412,24 +527,30 @@ def _map_transformer_blocks(
 ) -> list[NNSVGLayerSpec]:
     """Block-level rectangle approximation for Transformer/attention/recurrent.
 
-    Uses single-channel rectangles (channels=1) via the LeNet renderer.
-    Each stage (Attention, FeedFwd, Norm, Classifier) → one labeled block.
-    Labels are rendered centered inside the block by LeNet.js.
+    Each stage becomes a ch=1 rectangle with a multi-line label centered inside.
+    LeNet.js renders these labels with auto font-scaling.
 
-    NOT exact Transformer rendering.  Full layer list in debug-JSON export.
+    Stages shown:
+      Input → Embedding → [PosEnc] → [MH-Attn]\\nAdd & Norm →
+      [FFN]\\nAdd & Norm → ... → [Head]
+
+    NOT exact Transformer rendering.  Q/K/V projections, individual attention
+    heads, exact residual paths, and tensor flow are NOT drawn.
+    Full layer list is preserved in the debug-JSON export.
     """
     layers = arch.layers
     n = len(layers)
     specs: list[NNSVGLayerSpec] = []
     i = 0
+    first_attn_seen = False
 
     while i < n:
         kind = layers[i].kind
 
         if kind == LayerKind.INPUT:
             specs.append(NNSVGLayerSpec(
-                layer_type="conv", label="Input",
-                channels=1, feature_map_width=42, feature_map_height=60,
+                layer_type="conv", label="Tokens\nInput",
+                channels=1, feature_map_width=72, feature_map_height=64,
                 color=_COLORS["input"],
             ))
             i += 1
@@ -437,29 +558,47 @@ def _map_transformer_blocks(
         elif kind == LayerKind.EMBEDDING:
             specs.append(NNSVGLayerSpec(
                 layer_type="conv", label="Embedding",
-                channels=1, feature_map_width=72, feature_map_height=72,
+                channels=1, feature_map_width=80, feature_map_height=72,
                 color=_COLORS["dense"],
             ))
             i += 1
 
+        elif kind == LayerKind.ADD and not first_attn_seen:
+            # ADD before the first attention → likely positional encoding.
+            specs.append(NNSVGLayerSpec(
+                layer_type="conv", label="PosEnc",
+                channels=1, feature_map_width=72, feature_map_height=60,
+                color=_COLORS["norm"],
+            ))
+            i += 1
+
         elif kind == LayerKind.ATTENTION:
+            first_attn_seen = True
+            # Absorb following Add/Norm (residual sub-layer).
             j = i + 1
             while j < n and layers[j].kind in _TRANSFORMER_ABSORB:
                 j += 1
-            # fmW=80 ensures "[Attention]" (11 chars) renders at ≥9pt inside the box.
+            # Multi-line label: first line is the main op, second is the residual.
             specs.append(NNSVGLayerSpec(
-                layer_type="conv", label="[Attention]",
-                channels=1, feature_map_width=80, feature_map_height=104,
+                layer_type="conv", label="[MH-Attn]\nAdd & Norm",
+                channels=1, feature_map_width=88, feature_map_height=108,
                 color=_COLORS["attention"],
             ))
             i = j
 
         elif kind == LayerKind.DENSE:
-            # Absorb feed-forward block: Dense + activations + Dense + Norm/Add.
+            # Absorb FFN block non-greedily:
+            #   Dense-up → optional (Act + Dense-down) → optional Add/Norm
+            # A second Dense is only absorbed when an activation separated the two,
+            # which is the standard FFN up-project → activate → down-project pattern.
+            # This prevents the classifier (a separate trailing Dense) from being
+            # swallowed into the same block as the FFN.
             j = i + 1
-            while j < n and layers[j].kind in (
-                _ACTIVATION_KINDS | frozenset({LayerKind.DENSE, LayerKind.DROPOUT})
-            ):
+            activation_seen = False
+            while j < n and layers[j].kind in (_ACTIVATION_KINDS | frozenset({LayerKind.DROPOUT})):
+                j += 1
+                activation_seen = True
+            if activation_seen and j < n and layers[j].kind == LayerKind.DENSE:
                 j += 1
             while j < n and layers[j].kind in _TRANSFORMER_ABSORB:
                 j += 1
@@ -470,15 +609,18 @@ def _map_transformer_blocks(
                              LayerKind.FLATTEN, LayerKind.RESHAPE, LayerKind.UNKNOWN})
             )
             is_classifier = (j >= n) or not non_trivial
-            # fmW=72 gives enough room for "FeedFwd" (7) and "Classifier" (10).
-            specs.append(NNSVGLayerSpec(
-                layer_type="conv",
-                label="Classifier" if is_classifier else "FeedFwd",
-                channels=1,
-                feature_map_width=72,
-                feature_map_height=70 if is_classifier else 90,
-                color=_COLORS["output"] if is_classifier else _COLORS["ffn"],
-            ))
+            if is_classifier:
+                specs.append(NNSVGLayerSpec(
+                    layer_type="conv", label="[Head]\nClassifier",
+                    channels=1, feature_map_width=80, feature_map_height=72,
+                    color=_COLORS["output"],
+                ))
+            else:
+                specs.append(NNSVGLayerSpec(
+                    layer_type="conv", label="[FFN]\nAdd & Norm",
+                    channels=1, feature_map_width=80, feature_map_height=92,
+                    color=_COLORS["ffn"],
+                ))
             i = j
 
         elif kind in _RECURRENT_KINDS:
@@ -486,8 +628,8 @@ def _map_transformer_blocks(
             while j < n and layers[j].kind in _TRANSFORMER_ABSORB:
                 j += 1
             specs.append(NNSVGLayerSpec(
-                layer_type="conv", label=f"[{kind.name}]",
-                channels=1, feature_map_width=54, feature_map_height=90,
+                layer_type="conv", label=f"[{kind.name}]\nAdd & Norm",
+                channels=1, feature_map_width=80, feature_map_height=92,
                 color=_COLORS["recurrent"],
             ))
             i = j

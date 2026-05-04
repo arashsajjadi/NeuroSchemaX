@@ -45,7 +45,7 @@ class Figure:
     # Drawing / parsing
     # ------------------------------------------------------------------
 
-    def draw(self, source: Any, **kwargs: Any) -> "Figure":
+    def draw(self, source: Any, **kwargs: Any) -> Figure:
         """Parse *source* and store the resulting architecture.
 
         Returns ``self`` so calls can be chained::
@@ -84,10 +84,10 @@ class Figure:
         - ``.html`` -> HTML
         - ``.svg`` -> SVG (requires Playwright)
         """
-        arch = self._require_arch()
+        self._require_arch()
         out = Path(path)
         suffix = out.suffix.lower()
-        merged = self._merged_kwargs(kwargs)
+        self._merged_kwargs(kwargs)
         if suffix == ".html":
             return self.save_html(path, **kwargs)
         elif suffix == ".svg":
@@ -119,8 +119,8 @@ class Figure:
         - Outside a notebook it opens in the **default web browser**.
         """
         arch = self._require_arch()
-        from .render import render_network_html
         from .._display import show_html
+        from .render import render_network_html
         merged = self._merged_kwargs(kwargs)
         html = render_network_html(arch, **merged)
         show_html(html)
@@ -147,8 +147,8 @@ class Figure:
         This is an alias for :meth:`export_nnsvg_spec` using file-path output.
         """
         arch = self._require_arch()
-        from .render import build_nnsvg_spec
         from ..exporters.nnsvg import save_nnsvg_spec
+        from .render import build_nnsvg_spec
         merged = self._merged_kwargs(kwargs)
         spec = build_nnsvg_spec(arch, **merged)
         return save_nnsvg_spec(spec, path)

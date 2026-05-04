@@ -367,9 +367,10 @@ def test_transformer_html_contains_block_labels(tmp_path: Path):
     out = tmp_path / "transformer.html"
     nsx.save_network_html(out, _transformer_spec())
     html = out.read_text()
-    # The spec JSON is embedded in the HTML; block labels appear as JSON strings
-    assert "[Attention]" in html or "Attention" in html
-    assert "FeedFwd" in html or "Classifier" in html
+    # Labels are embedded in the spec JSON; check for operation-type strings.
+    # "[MH-Attn]" contains "Attn"; "[FFN]" contains "FFN"; "[Head]" contains "Head".
+    assert "Attn" in html or "attn" in html.lower(), "Expected attention label in HTML"
+    assert "FFN" in html or "Classifier" in html or "Head" in html
 
 
 def test_activation_fused_into_fcnn_label():
@@ -788,9 +789,12 @@ def test_transformer_block_labels_fit_at_min_font():
     for l in spec.layers:
         if l.layer_type == "conv" and l.channels == 1 and l.label:
             avail = l.feature_map_width - 8
-            required_font = avail / (len(l.label) * 0.62) if l.label else MIN_FONT
+            # Multi-line labels: measure against the LONGEST LINE, not total len.
+            max_line_len = max(len(line) for line in l.label.split("\n"))
+            required_font = avail / (max_line_len * 0.62) if max_line_len else MIN_FONT
             assert required_font >= MIN_FONT, (
-                f"Block label {l.label!r} ({len(l.label)} chars) in fmW={l.feature_map_width} "
+                f"Block label {l.label!r} (max line {max_line_len} chars) "
+                f"in fmW={l.feature_map_width} "
                 f"would need font_size={required_font:.1f}pt < minimum {MIN_FONT}pt"
             )
 
@@ -824,3 +828,220 @@ def test_safe_label_policy_skips_box_layers():
     assert result[0].label == original_label, (
         "Safety policy must not modify box-layer (ch=1) labels"
     )
+
+
+# ── Operation-aware label and block summary tests ────────────────────────────
+
+def test_compact_label_conv_shows_channels_and_kernel():
+    """Compact mode for conv layers must show channel count and kernel size."""
+    spec_dict = {
+        "model_name": "tiny",
+        "layers": [
+            {"name": "input",  "kind": "input",   "shape": [1, 1, 28, 28]},
+            {"name": "conv1",  "kind": "conv",    "out_channels": 32, "kernel_size": [3, 3]},
+            {"name": "fc1",    "kind": "dense",   "units": 10},
+        ],
+    }
+    spec = nsx.build_nnsvg_spec(spec_dict, label_mode="compact")
+    conv_labels = [l.label for l in spec.layers if l.layer_type == "conv" and l.channels != 1]
+    # At least one conv label should show "Conv", channels, and kernel info
+    assert any("Conv" in lb and ("32" in lb or "k3" in lb) for lb in conv_labels), (
+        f"Compact label should show op type + channels + kernel; got: {conv_labels}"
+    )
+
+
+def test_compact_label_pool_shows_pool_type():
+    """Compact labels for pool layers must not be raw layer names."""
+    spec_dict = {
+        "model_name": "cnn",
+        "layers": [
+            {"name": "input", "kind": "input", "shape": [1, 1, 28, 28]},
+            {"name": "conv1", "kind": "conv",    "out_channels": 16, "kernel_size": [3, 3]},
+            {"name": "pool1", "kind": "maxpool", "kernel_size": [2, 2], "stride": [2, 2]},
+            {"name": "fc1",   "kind": "dense",   "units": 10},
+        ],
+    }
+    spec = nsx.build_nnsvg_spec(spec_dict, label_mode="compact")
+    pool_labels = [l.label for l in spec.layers if l.layer_type == "pool"]
+    assert any("MaxP" in lb or "AvgP" in lb or "Pool" in lb for lb in pool_labels), (
+        f"Pool compact label should show pool type; got: {pool_labels}"
+    )
+
+
+def test_compact_label_dense_shows_units():
+    """Dense compact labels must show unit count."""
+    spec_dict = {
+        "model_name": "mlp",
+        "layers": [
+            {"name": "input", "kind": "input", "shape": [1, 784]},
+            {"name": "fc1",   "kind": "dense", "units": 256},
+            {"name": "out",   "kind": "dense", "units": 10},
+        ],
+    }
+    spec = nsx.build_nnsvg_spec(spec_dict, label_mode="compact")
+    dense_labels = [l.label for l in spec.layers if l.layer_type == "dense"]
+    assert any("256" in lb for lb in dense_labels), (
+        f"Dense compact label should show units; got: {dense_labels}"
+    )
+
+
+def test_compact_label_gap_is_gap():
+    """Global average pool must produce 'GAP' as compact label."""
+    spec_dict = {
+        "model_name": "cnn",
+        "layers": [
+            {"name": "input", "kind": "input", "shape": [1, 3, 224, 224]},
+            {"name": "c1",   "kind": "conv",              "out_channels": 64, "kernel_size": [3, 3]},
+            {"name": "c2",   "kind": "conv",              "out_channels": 64, "kernel_size": [3, 3]},
+            {"name": "c3",   "kind": "conv",              "out_channels": 64, "kernel_size": [3, 3]},
+            {"name": "c4",   "kind": "conv",              "out_channels": 64, "kernel_size": [3, 3]},
+            {"name": "gap",  "kind": "globalaveragepool"},
+            {"name": "fc",   "kind": "dense",             "units": 1000},
+        ],
+    }
+    spec = nsx.build_nnsvg_spec(spec_dict, label_mode="compact")
+    labels = [l.label for l in spec.layers]
+    # After summary grouping (7 arch layers → compact auto), GAP may be inside a block
+    # but "GAP" should appear somewhere OR be absorbed into a block summary
+    # Either way, the op type must be recognisable
+    all_labels = " ".join(labels)
+    # Ensure we didn't just get raw layer names (like "gap" → "gap")
+    assert "GAP" in all_labels or "Block" in all_labels or "GlobalAvg" in all_labels, (
+        f"Expected GAP or block label; got: {labels}"
+    )
+
+
+def test_large_cnn_summary_blocks_have_conv_info():
+    """Summary blocks for large CNN must include conv count and channel info."""
+    large_spec = {
+        "model_name": "vgg_like",
+        "layers": (
+            [{"name": "input", "kind": "input", "shape": [1, 3, 224, 224]}]
+            + [{"name": f"conv{i}", "kind": "conv", "out_channels": 64, "kernel_size": [3, 3]}
+               for i in range(12)]
+            + [{"name": "fc", "kind": "dense", "units": 4096}]
+        ),
+    }
+    spec = nsx.build_nnsvg_spec(large_spec, detail_level="summary")
+    block_labels = [l.label for l in spec.layers if l.layer_type == "conv" and l.channels == 1]
+    assert len(block_labels) > 0, "Summary should produce ch=1 block labels"
+    # At least one block should mention conv count or channel info
+    combined = "\n".join(block_labels)
+    has_info = any(
+        kw in combined for kw in ("cv", "ch", "conv", "Block")
+    )
+    assert has_info, f"Summary blocks should include conv/channel info; got:\n{combined!r}"
+
+
+def test_large_cnn_summary_multiple_blocks():
+    """Summary for large CNN must produce more than one named block (not 'Block 1' only)."""
+    large_spec = {
+        "model_name": "vgg20",
+        "layers": (
+            [{"name": "input", "kind": "input", "shape": [1, 3, 224, 224]}]
+            + [{"name": f"c{i}", "kind": "conv", "out_channels": 64, "kernel_size": [3, 3]}
+               for i in range(6)]
+            + [{"name": "pool1", "kind": "maxpool", "kernel_size": [2, 2]}]
+            + [{"name": f"c{i+6}", "kind": "conv", "out_channels": 128, "kernel_size": [3, 3]}
+               for i in range(6)]
+            + [{"name": "pool2", "kind": "maxpool", "kernel_size": [2, 2]}]
+            + [{"name": "fc", "kind": "dense", "units": 4096}]
+        ),
+    }
+    spec = nsx.build_nnsvg_spec(large_spec, detail_level="summary")
+    block_labels = [l.label for l in spec.layers if "Block" in l.label]
+    assert len(block_labels) >= 2, (
+        f"Large CNN summary should have multiple named blocks; got: {[l.label for l in spec.layers]}"
+    )
+
+
+def test_transformer_block_labels_include_mh_attn():
+    """Transformer block summary must include [MH-Attn] label."""
+    trans_spec = {
+        "model_name": "transformer",
+        "layers": [
+            {"name": "embed", "kind": "embedding"},
+            {"name": "attn",  "kind": "attention"},
+            {"name": "ff",    "kind": "dense", "units": 2048},
+            {"name": "out",   "kind": "dense", "units": 10},
+        ],
+    }
+    spec = nsx.build_nnsvg_spec(trans_spec)
+    labels = [l.label for l in spec.layers]
+    combined = "\n".join(labels)
+    assert "MH-Attn" in combined or "Attn" in combined, (
+        f"Transformer block should include [MH-Attn]; got: {labels}"
+    )
+
+
+def test_transformer_block_labels_include_ffn():
+    """Transformer block summary must include [FFN] label."""
+    trans_spec = {
+        "model_name": "transformer",
+        "layers": [
+            {"name": "attn", "kind": "attention"},
+            {"name": "ff",   "kind": "dense", "units": 2048},
+            {"name": "out",  "kind": "dense", "units": 10},
+        ],
+    }
+    spec = nsx.build_nnsvg_spec(trans_spec)
+    labels = [l.label for l in spec.layers]
+    combined = "\n".join(labels)
+    assert "FFN" in combined or "FeedFwd" in combined, (
+        f"Transformer block should include [FFN]; got: {labels}"
+    )
+
+
+def test_upsample_shape_inference():
+    """Upsample with scale_factor should have its output shape inferred."""
+    spec_dict = {
+        "model_name": "upsample_test",
+        "layers": [
+            {"name": "input",  "kind": "input",    "shape": [1, 128, 8, 8]},
+            {"name": "up1",    "kind": "upsample", "scale_factor": 2},
+        ],
+    }
+    arch = nsx.parse_model(spec_dict)
+    up_layer = next(l for l in arch.layers if l.name == "up1")
+    # Expect output [1, 128, 16, 16]
+    assert up_layer.output_shape == [1, 128, 16, 16], (
+        f"Upsample scale_factor=2 should double spatial dims; got {up_layer.output_shape}"
+    )
+
+
+def test_attention_shape_preserved():
+    """Self-attention output shape must equal the input shape."""
+    spec_dict = {
+        "model_name": "attn_test",
+        "layers": [
+            {"name": "input", "kind": "input",     "shape": [1, 512]},
+            {"name": "attn1", "kind": "attention"},
+        ],
+    }
+    arch = nsx.parse_model(spec_dict)
+    attn = next(l for l in arch.layers if l.name == "attn1")
+    # Attention output should preserve the input shape [1, 512]
+    assert attn.output_shape == [1, 512], (
+        f"Attention output should preserve input shape; got {attn.output_shape}"
+    )
+
+
+def test_debug_json_preserves_add_and_norm_layers(tmp_path: Path):
+    """Debug JSON must include Add and LayerNorm layers even after block grouping."""
+    trans_spec = {
+        "model_name": "transformer",
+        "layers": [
+            {"name": "attn",  "kind": "attention"},
+            {"name": "add1",  "kind": "add"},
+            {"name": "norm1", "kind": "layernorm"},
+            {"name": "ff",    "kind": "dense", "units": 512},
+        ],
+    }
+    out = tmp_path / "trans_debug.json"
+    nsx.save_debug_json(out, trans_spec)
+    import json
+    data = json.loads(out.read_text())
+    kinds = [l["kind"] for l in data["layers"]]
+    assert "attention" in kinds,  f"Debug JSON must preserve attention; got {kinds}"
+    assert "add" in kinds,        f"Debug JSON must preserve add; got {kinds}"
+    assert "layer_norm" in kinds, f"Debug JSON must preserve layernorm; got {kinds}"

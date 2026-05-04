@@ -181,4 +181,28 @@ def _infer_one(
             return [ints[0], layer.units]
         return [layer.units]
 
+    # ── Upsample / Resize ───────────────────────────────────────────────────
+    if kind == LayerKind.UPSAMPLE:
+        scale = layer.attributes.get("scale_factor", layer.attributes.get("scales"))
+        if scale is not None:
+            N, C, H, W = _parse_nchw(prev)
+            if H is not None and W is not None:
+                if isinstance(scale, (int, float)):
+                    h_out, w_out = int(H * scale), int(W * scale)
+                elif isinstance(scale, (list, tuple)) and len(scale) >= 2:
+                    h_out = int(H * float(scale[-2]))
+                    w_out = int(W * float(scale[-1]))
+                else:
+                    return None
+                c = C or 1
+                if N is not None:
+                    return [N, c, h_out, w_out]
+                return [c, h_out, w_out]
+        # No scale info: output shape unknown.
+        return None
+
+    # ── Attention (self-attention output = same shape as input) ─────────────
+    if kind == LayerKind.ATTENTION:
+        return list(prev)
+
     return None

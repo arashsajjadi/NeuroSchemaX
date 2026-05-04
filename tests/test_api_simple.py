@@ -10,7 +10,6 @@ import pytest
 
 import neuroschemax as nsx
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -169,8 +168,8 @@ def test_show_html_uses_ipython_display_in_jupyter():
     """show_html() calls IPython.display.display when _in_jupyter() is True."""
     from neuroschemax._display import show_html
     mock_display = patch("neuroschemax._display._in_jupyter", return_value=True)
-    mock_ipython_display = patch("IPython.display.display")
-    mock_ipython_html = patch("IPython.display.HTML", side_effect=lambda h: h)
+    patch("IPython.display.display")
+    patch("IPython.display.HTML", side_effect=lambda h: h)
 
     try:
         import IPython.display  # noqa: F401
@@ -187,8 +186,9 @@ def test_show_html_uses_ipython_display_in_jupyter():
 
 def test_show_html_falls_back_to_browser_if_ipython_missing():
     """If IPython is unavailable even inside 'Jupyter', browser fallback is used."""
-    from neuroschemax._display import show_html
     import builtins
+
+    from neuroschemax._display import show_html
     real_import = builtins.__import__
 
     def mock_import(name, *args, **kwargs):
@@ -324,6 +324,7 @@ def test_html_no_warning_badge_for_clean_model(tmp_path: Path):
 def test_cli_draw_default_output(tmp_path: Path):
     """draw without -o writes <model_stem>.html to the CWD."""
     import os
+
     from neuroschemax.cli import main
 
     spec_path = tmp_path / "my_model.json"

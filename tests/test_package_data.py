@@ -6,7 +6,6 @@ from pathlib import Path
 
 import pytest
 
-
 # Path to the installed (or editable-installed) assets directory
 _ASSETS_DIR = (
     Path(__file__).resolve().parent.parent
