@@ -59,15 +59,22 @@ What you get without any options:
 - **Automatic style selection** — NeuroSchemaX inspects the model and picks
   the best NN-SVG diagram family (FCNN for MLPs, LeNet for small CNNs,
   AlexNet for deeper CNNs).
+- **Operation-aware labels** — layers are labeled with their operation type
+  and key parameters: `Conv 64 k3`, `Dense 128`, `GAP`, `MaxP k2 s2`,
+  `[MH-Attn]`.  The last dense layer is labeled `Output N` (MLP) or
+  `Classifier` (CNN).
+- **Activation fusion** — a ReLU or GeLU immediately following a layer is
+  fused into the label: `Conv 64 k3 +ReLU`, `Dense 128 +GeLU`.
+- **Diagram subtitle** — every rendered HTML includes a subtitle that shows
+  the render family, fidelity, original layer count, and visual stage count
+  when they differ: `FCNN · exact · 6 layers · 4 visual stages`.
 - **Sensible canvas size** — the canvas expands automatically so layers are
   never crowded, even for deep networks.
-- **Readable labels** — layer names are shown by default, truncated cleanly
-  when space is tight.
-- **Clean spacing** — layers are evenly distributed with comfortable margins.
+- **Summary mode for large models** — deep CNNs are automatically grouped into
+  meaningful conv blocks with per-block metadata:
+  `Block 1 / 4×Conv k3, 64ch / Pool ↓2`.
 - **Professional themes** — `paper` (clean, minimal), `thesis` (print-ready),
   `readme` (docs-friendly), `debug` (verbose, all annotations).
-- **Compact mode** — pass `--compact` or `compact=True` for very deep models
-  to reduce node size and spacing.
 - **Honest warnings** — when a model cannot be rendered exactly (ResNet skip
   connections, Transformer attention blocks, U-Net branches), an amber badge
   appears in the HTML explaining what was approximated and where the full
@@ -85,8 +92,8 @@ What you get without any options:
 |---|---|---|
 | `examples/tiny_mlp_to_html.py` | FCNN | Exact |
 | `examples/tiny_cnn_to_svg.py` | LeNet | Exact |
-| `examples/resnet_like.py` | AlexNet (approximate) | Sequential backbone; skip links in debug JSON |
-| `examples/transformer_like.py` | FCNN (approximate) | Attention blocks collapsed; full layers in debug JSON |
+| `examples/resnet_like.py` | AlexNet backbone (approximate) | Sequential; skip links in debug JSON |
+| `examples/transformer_like.py` | Block-level sequence (approximate) | Attention blocks not drawn; full layers in debug JSON |
 
 ---
 
@@ -209,7 +216,7 @@ import neuroschemax as nsx
 nsx.draw("model.onnx")            # parse and stash
 nsx.savefig("diagram.html")       # use stashed arch
 nsx.save_html("out.html")         # also HTML
-nsx.show()                        # open in browser
+nsx.show()                        # open in browser (inline in Jupyter)
 
 # Or pass source directly (no stash needed)
 nsx.save_html("out.html", "model.onnx")
@@ -286,20 +293,35 @@ These are accepted by every rendering function and `nsx.figure()`:
 | `approximate_mode` | `str` | `"warn"` | `"warn"`, `"error"`, or `"allow"` |
 
 **`label_mode`** controls what each layer label shows:
-- `auto` — compact for small models, name-only for large models
-- `name` — layer name only (never overlaps)
-- `compact` — short name + most-relevant dimension (`conv1 26x26`, `fc1 128`)
+- `auto` — operation-aware compact labels for small models (`Conv 64 k3`, `Dense 128`);
+  name-only for large models
+- `name` — layer name only (shortest; never overlaps)
+- `compact` — operation type + key parameters: `Conv 64 k3`, `MaxP k2 s2`, `Dense 128`,
+  `GAP`, `Input 28x28`, `[MH-Attn]`
 - `shape` — shape only, no name
-- `full` — name + complete shape string (may overlap for large models)
+- `full` — layer name + complete shape string (may overlap for large models)
+
+Activations immediately following a layer are fused into the label when
+`show_activations=True`: `Conv 64 k3 +ReLU`, `Dense 128 +GeLU`.
+The last dense layer in any diagram is labeled `Output N` (MLP) or `Classifier` (CNN).
 
 **`detail_level`** controls how many layers are shown:
-- `auto` — full for small models (≤ 12 spec layers), grouped for larger
-- `summary` — groups repeated conv/pool sequences into blocks; ResNet/U-Net get block labels
+- `auto` — all layers for small models; grouped blocks for models with more than 12
+  spec layers
+- `summary` — groups conv/pool sequences into blocks with metadata, e.g.
+  `Block 2 / 4×Conv k3, 128ch / Pool ↓2`.
+  ResNet → `Stem / Residual Block N (+skip collapsed) / Head`.
+  U-Net → `Encoder / Bottleneck / Decoder / Output`.
 - `full` — every individual layer shown
 
-**`transformer_mode`** controls Transformer/recurrent rendering:
-- `block_summary` — sequences labeled rectangular blocks via LeNet renderer (default)
-- `unsupported` — shows a "not supported" placeholder and refers to debug JSON
+**`transformer_mode`** controls Transformer/attention/recurrent rendering:
+- `block_summary` — renders a sequence of labeled rectangular blocks:
+  `Tokens/Input → Embedding → [MH-Attn] / Add & Norm → [FFN] / Add & Norm → [Head] / Classifier`.
+  Positional-encoding `Add` layers before the first attention block are labeled `PosEnc`.
+  This is a block-level approximation, not exact Transformer rendering.
+- `unsupported` — renders a professional diagnostic page that identifies the detected
+  operation types (Embedding, Attention, Dense/FFN) and directs the user to
+  `block_summary` mode or the debug JSON export
 
 **`approximate_mode`** controls how approximate renderings are handled:
 - `warn` — amber warning badge shown in HTML (default)
@@ -447,10 +469,10 @@ Notes:
 - The `family` field in `recommend_view()` reflects the semantic architecture type,
   not the rendering family.  Transformers (`"fcnn"` semantically) are rendered using
   the LeNet renderer (rect blocks) when `transformer_mode="block_summary"`.
-- Use `transformer_mode="unsupported"` to get an explicit "not supported" placeholder
+- Use `transformer_mode="unsupported"` to get a professional diagnostic page
   instead of the block summary.
-- The block summary is honest: labels tell you the operation type; Q/K/V flows,
-  residual paths, and repeated-block structure are not drawn.
+- The block summary is honest: labels identify the operation type; Q/K/V flows,
+  residual paths, and repeated-block topology are not drawn.
 
 ---
 
@@ -467,19 +489,30 @@ warning.
 | MLP / dense network | FCNN neuron columns | **Exact** | — |
 | Small CNN (≤ 3 convs) | LeNet feature maps | **Exact** | — |
 | VGG-style deep CNN | AlexNet feature maps | **Exact** | — |
-| ResNet / residual blocks | AlexNet backbone | **Approximate** | Skip links in debug JSON |
-| U-Net / encoder-decoder | AlexNet backbone | **Approximate** | Decoder branches in debug JSON |
+| ResNet / residual blocks | AlexNet backbone or block summary | **Approximate** | Skip links in debug JSON |
+| U-Net / encoder-decoder | AlexNet backbone or block summary | **Approximate** | Decoder branches in debug JSON |
 | Transformer / attention | Block-level sequence* | **Approximate** | All layers in debug JSON |
 | LSTM / GRU / RNN | Block-level sequence* | **Approximate** | All layers in debug JSON |
 | Object-detection head | AlexNet backbone | **Approximate** | Detection branches in debug JSON |
 
 *Transformer and recurrent architectures are shown as a sequence of labeled
-rectangular blocks (Input → Embedding → [Attention] → FeedFwd → … → Classifier),
-rendered via the LeNet rectangle renderer.  This is a block-level approximation
-of the computation sequence — it is **not** an exact Transformer diagram.
-NN-SVG has no native Transformer, U-Net, or ResNet renderer.  The label inside
-each block identifies the operation type; residual connections and attention
-relationships are not drawn.
+rectangular blocks rendered via the LeNet rectangle renderer:
+
+```
+Tokens/Input → Embedding → PosEnc (if present)
+→ [MH-Attn] / Add & Norm → [FFN] / Add & Norm → … → [Head] / Classifier
+```
+
+This is a block-level approximation of the computation sequence.  It is
+**not** an exact Transformer diagram.  NN-SVG has no native Transformer,
+U-Net, or ResNet renderer.  Q/K/V projections, individual attention heads,
+exact residual paths, positional-encoding internals, and tensor flow are
+not drawn.
+
+With `detail_level="summary"`, ResNet architectures are shown as:
+`Stem → Residual Block 1 (+skip collapsed) → … → Head`
+and U-Net architectures as:
+`Encoder (↓ conv / skip→debug JSON) → Bottleneck → Decoder (↑ conv / concat→debug JSON) → Output`
 
 Every approximate rendering:
 - shows an amber warning badge in the HTML explaining what was simplified
@@ -539,6 +572,12 @@ export the NN-SVG JSON spec and load it in the [NN-SVG web app][nnsvg].
 **Q: Why is confidence MEDIUM/LOW?**
 A model has features that don't map perfectly to the chosen NN-SVG family.
 The diagram is still generated; read the `warnings` for specifics.
+
+**Q: Why does the diagram show fewer layers than my model has?**
+By default (`detail_level="auto"`), large models are grouped into conv/pool
+blocks to keep the diagram readable.  Each block label shows what it contains:
+`Block 2 / 4×Conv k3, 128ch / Pool ↓2`.  Pass `detail_level="full"` to see
+every individual layer.
 
 ---
 
