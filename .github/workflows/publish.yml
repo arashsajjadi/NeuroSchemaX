@@ -35,7 +35,7 @@ jobs:
     name: Publish to PyPI
     needs: build
     runs-on: ubuntu-latest
-    environment: NeuroSchemaX
+    environment: neuroschemax
     permissions:
       id-token: write
       contents: read
