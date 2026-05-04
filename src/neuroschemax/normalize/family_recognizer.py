@@ -56,12 +56,10 @@ def recommend_family(
     # ── Priority 1: Transformer / attention ─────────────────────────────────
     if has_attention:
         warnings.append(
-            "Model contains attention operations (Transformer-like architecture).  "
-            "NN-SVG has no native Transformer renderer.  "
-            "A block-level summary is shown — Q/K/V projections, individual "
-            "attention heads, exact residual connections, positional-encoding "
-            "details, and tensor flow are NOT drawn.  "
-            "The full layer list is preserved in the debug-JSON export."
+            "Transformer-like architecture (attention detected).  "
+            "Block-level summary shown — Q/K/V, individual attention heads, "
+            "exact residual paths, and tensor flow are NOT drawn.  "
+            "Full layer list preserved in debug JSON."
         )
         if conv_count > 0:
             if has_skip:

@@ -291,5 +291,5 @@ def test_add_layers_removed_from_fcnn():
         ],
     }
     spec = nsx.build_nnsvg_spec(spec_dict)
-    labels = [l.label for l in spec.layers]
+    labels = [s.label for s in spec.layers]
     assert "skip_add" not in labels, f"Add layer appeared as diagram column: {labels}"

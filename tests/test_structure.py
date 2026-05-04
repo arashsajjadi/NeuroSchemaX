@@ -246,7 +246,7 @@ def test_fcnn_edge_opacity_reduced():
 def test_cnn_renders_conv_and_dense():
     """Tiny CNN spec still produces both conv-type and dense-type layers."""
     spec = nsx.build_nnsvg_spec(_cnn_spec())
-    types = {l.layer_type for l in spec.layers}
+    types = {s.layer_type for s in spec.layers}
     assert "conv" in types
     assert "dense" in types
 
@@ -254,9 +254,9 @@ def test_cnn_renders_conv_and_dense():
 def test_cnn_dense_units_capped():
     """Dense columns in LeNet view must be capped to avoid visual domination."""
     spec = nsx.build_nnsvg_spec(_cnn_spec())
-    for l in spec.layers:
-        if l.layer_type == "dense":
-            assert l.units <= 10, f"Dense units {l.units} exceeds LeNet cap"
+    for s in spec.layers:
+        if s.layer_type == "dense":
+            assert s.units <= 10, f"Dense units {s.units} exceeds LeNet cap"
 
 
 def test_alexnet_dense_units_capped():
@@ -271,9 +271,9 @@ def test_alexnet_dense_units_capped():
         ),
     }
     spec = nsx.build_nnsvg_spec(deep_spec)
-    for l in spec.layers:
-        if l.layer_type == "dense":
-            assert l.units <= 8, f"AlexNet dense units {l.units} exceeds cap"
+    for s in spec.layers:
+        if s.layer_type == "dense":
+            assert s.units <= 8, f"AlexNet dense units {s.units} exceeds cap"
 
 
 def test_resnet_approximate_warning():
@@ -289,7 +289,7 @@ def test_resnet_debug_json_preserves_skip_info(tmp_path: Path):
     out = tmp_path / "resnet_debug.json"
     nsx.save_debug_json(out, _resnet_spec())
     data = json.loads(out.read_text())
-    kinds = [l["kind"] for l in data["layers"]]
+    kinds = [s["kind"] for s in data["layers"]]
     assert "add" in kinds, "Add/skip layer missing from debug JSON"
 
 
@@ -306,7 +306,7 @@ def test_unet_debug_json_preserves_concat(tmp_path: Path):
     out = tmp_path / "unet_debug.json"
     nsx.save_debug_json(out, _unet_spec())
     data = json.loads(out.read_text())
-    kinds = [l["kind"] for l in data["layers"]]
+    kinds = [s["kind"] for s in data["layers"]]
     assert "concat" in kinds
 
 
@@ -330,7 +330,7 @@ def test_transformer_debug_json_preserves_attention_layers(tmp_path: Path):
     out = tmp_path / "transformer_debug.json"
     nsx.save_debug_json(out, _transformer_spec())
     data = json.loads(out.read_text())
-    kinds = [l["kind"] for l in data["layers"]]
+    kinds = [s["kind"] for s in data["layers"]]
     assert "attention" in kinds, "Attention layer missing from debug JSON"
 
 
@@ -343,15 +343,15 @@ def test_transformer_uses_rect_block_view():
         f"Expected LENET for block view, got {spec.family}"
     )
     # All layers must be single-rect blocks (channels=1, layer_type="conv")
-    for l in spec.layers:
-        assert l.layer_type == "conv", f"Expected rect block, got layer_type={l.layer_type!r}"
-        assert l.channels == 1, f"Expected single-channel block, got channels={l.channels}"
+    for s in spec.layers:
+        assert s.layer_type == "conv", f"Expected rect block, got layer_type={s.layer_type!r}"
+        assert s.channels == 1, f"Expected single-channel block, got channels={s.channels}"
 
 
 def test_transformer_block_labels_are_meaningful():
     """Transformer block labels must name the operation, not be generic."""
     spec = nsx.build_nnsvg_spec(_transformer_spec())
-    labels = {l.label for l in spec.layers}
+    labels = {s.label for s in spec.layers}
     # Must include at least one attention block and at least one FFN/classifier block
     has_attention = any("attention" in lb.lower() or "attn" in lb.lower() for lb in labels)
     has_fwd = any(
@@ -385,7 +385,7 @@ def test_activation_fused_into_fcnn_label():
         ],
     }
     spec = nsx.build_nnsvg_spec(spec_dict)
-    labels = [l.label for l in spec.layers]
+    labels = [s.label for s in spec.layers]
     fused = any("+ReLU" in lb or "+relu" in lb.lower() for lb in labels)
     assert fused, f"Expected fused ReLU label, got: {labels}"
 
@@ -406,7 +406,7 @@ def test_relu_not_a_separate_column_in_fcnn():
     # Without fusion: input, fc1, relu1, fc2 → 4 layers
     assert len(spec.layers) <= 3, (
         f"Expected ≤3 layers with activation fusion, got {len(spec.layers)}: "
-        f"{[l.label for l in spec.layers]}"
+        f"{[s.label for s in spec.layers]}"
     )
 
 
@@ -453,7 +453,7 @@ def test_summary_infers_flatten_shape():
     summary = nsx.summarize_model(_cnn_spec())
     # After two conv+pool stages the exact size depends on precision,
     # but it should NOT be '?' for flatten.
-    lines = [l for l in summary.splitlines() if "flatten" in l.lower()]
+    lines = [line for line in summary.splitlines() if "flatten" in line.lower()]
     assert lines, "Flatten layer missing from summary"
     assert "?" not in lines[0], f"Flatten shape not inferred: {lines[0]}"
 
@@ -483,7 +483,7 @@ def test_summary_dynamic_shape_stays_unknown():
     }
     summary = nsx.summarize_model(spec)
     # conv output cannot be inferred when spatial dims are symbolic
-    lines = [l for l in summary.splitlines() if "conv1" in l]
+    lines = [line for line in summary.splitlines() if "conv1" in line]
     assert lines
     assert "?" in lines[0], f"Expected '?' for dynamic shape: {lines[0]}"
 
@@ -492,32 +492,32 @@ def test_summary_dynamic_shape_stays_unknown():
 
 def test_label_mode_name_no_shapes():
     spec = nsx.build_nnsvg_spec(_cnn_spec(), label_mode="name")
-    for l in spec.layers:
-        if l.label:
+    for s in spec.layers:
+        if s.label:
             # Name-only mode: no "x" dimension strings like "26x26"
-            assert not any(c.isdigit() and "x" in l.label for c in l.label), \
-                f"label_mode='name' should not include shape: {l.label!r}"
+            assert not any(c.isdigit() and "x" in s.label for c in s.label), \
+                f"label_mode='name' should not include shape: {s.label!r}"
 
 
 def test_label_mode_shape_no_names():
     spec = nsx.build_nnsvg_spec(_cnn_spec(), label_mode="shape")
-    for l in spec.layers:
-        if l.label and l.layer_type in ("conv", "pool"):
+    for s in spec.layers:
+        if s.label and s.layer_type in ("conv", "pool"):
             # Shape mode: label should NOT be the full layer name
-            assert l.label not in ("conv1", "pool1", "conv2", "pool2"), \
-                f"label_mode='shape' still shows bare name: {l.label!r}"
+            assert s.label not in ("conv1", "pool1", "conv2", "pool2"), \
+                f"label_mode='shape' still shows bare name: {s.label!r}"
 
 
 def test_label_mode_compact_shorter_than_full():
     spec_c = nsx.build_nnsvg_spec(_cnn_spec(), label_mode="compact")
     spec_f = nsx.build_nnsvg_spec(_cnn_spec(), label_mode="full")
-    avg_compact = sum(len(l.label) for l in spec_c.layers if l.label) / max(len(spec_c.layers), 1)
-    avg_full    = sum(len(l.label) for l in spec_f.layers if l.label) / max(len(spec_f.layers), 1)
+    avg_compact = sum(len(s.label) for s in spec_c.layers if s.label) / max(len(spec_c.layers), 1)
+    avg_full    = sum(len(s.label) for s in spec_f.layers if s.label) / max(len(spec_f.layers), 1)
     assert avg_compact <= avg_full + 2, "compact labels should not be longer than full labels"
 
 
 def test_label_mode_invalid_raises():
-    with pytest.raises(Exception):  # ValidationError
+    with pytest.raises(Exception):  # ValidationError  # noqa: B017
         nsx.build_nnsvg_spec(_mlp_spec(), label_mode="nonsense")
 
 
@@ -558,7 +558,7 @@ def test_detail_level_auto_summarizes_large_cnn():
 
 
 def test_detail_level_invalid_raises():
-    with pytest.raises(Exception):
+    with pytest.raises(Exception):  # noqa: B017
         nsx.build_nnsvg_spec(_mlp_spec(), detail_level="none")
 
 
@@ -574,7 +574,7 @@ def test_show_activations_false_removes_fused_labels():
         ],
     }
     spec = nsx.build_nnsvg_spec(spec_dict, show_activations=False)
-    labels = " ".join(l.label for l in spec.layers)
+    labels = " ".join(s.label for s in spec.layers)
     assert "ReLU" not in labels and "relu" not in labels.lower(), \
         f"show_activations=False but found activation in labels: {labels!r}"
 
@@ -590,7 +590,7 @@ def test_show_activations_true_fuses_relu():
         ],
     }
     spec = nsx.build_nnsvg_spec(spec_dict, show_activations=True)
-    labels = " ".join(l.label for l in spec.layers)
+    labels = " ".join(s.label for s in spec.layers)
     assert "ReLU" in labels, f"show_activations=True but ReLU not fused: {labels!r}"
 
 
@@ -601,7 +601,7 @@ def test_transformer_mode_unsupported_produces_placeholder():
 
 
 def test_transformer_mode_invalid_raises():
-    with pytest.raises(Exception):
+    with pytest.raises(Exception):  # noqa: B017
         nsx.build_nnsvg_spec(_transformer_spec(), transformer_mode="fancy")
 
 
@@ -626,7 +626,7 @@ def test_approximate_mode_error_raises():
 
 
 def test_approximate_mode_invalid_raises():
-    with pytest.raises(Exception):
+    with pytest.raises(Exception):  # noqa: B017
         nsx.build_nnsvg_spec(_mlp_spec(), approximate_mode="silent")
 
 
@@ -650,7 +650,7 @@ def test_title_clean_no_underscores():
 def test_resnet_summary_has_residual_block_labels():
     """ResNet summary grouping must produce Stem / Res Block / Head labels."""
     spec = nsx.build_nnsvg_spec(_resnet_spec(), detail_level="summary")
-    labels = [l.label for l in spec.layers]
+    labels = [s.label for s in spec.layers]
     has_stem_or_block = any("Stem" in lb or "Res Block" in lb or "Block" in lb for lb in labels)
     assert has_stem_or_block, f"Expected block labels in ResNet summary: {labels}"
 
@@ -658,7 +658,7 @@ def test_resnet_summary_has_residual_block_labels():
 def test_unet_summary_has_encoder_decoder_labels():
     """U-Net summary grouping must produce Encoder/Bottleneck/Decoder labels."""
     spec = nsx.build_nnsvg_spec(_unet_spec(), detail_level="summary")
-    labels = [l.label for l in spec.layers]
+    labels = [s.label for s in spec.layers]
     has_enc_dec = any(
         w in lb for lb in labels for w in ("Encoder", "Bottleneck", "Decoder")
     )
@@ -687,10 +687,10 @@ def test_large_cnn_labels_do_not_overflow_slot():
     slot_px = (spec.width - 120) / n
     # Conservative safe-chars estimate at default font_size=12
     safe_chars = max(3, int(slot_px * 0.78 / (12 * 0.62)))
-    non_box = [l for l in spec.layers if l.layer_type == "dense" or l.channels != 1]
-    for l in non_box:
-        assert len(l.label) <= max(safe_chars, 3), (
-            f"Label {l.label!r} ({len(l.label)} chars) exceeds safe budget {safe_chars} "
+    non_box = [s for s in spec.layers if s.layer_type == "dense" or s.channels != 1]
+    for s in non_box:
+        assert len(s.label) <= max(safe_chars, 3), (
+            f"Label {s.label!r} ({len(s.label)} chars) exceeds safe budget {safe_chars} "
             f"for slot_px={slot_px:.0f}px"
         )
 
@@ -699,20 +699,20 @@ def test_auto_label_mode_uses_name_for_large_cnn():
     """For a CNN with > 9 arch layers, auto label mode must use name-only labels."""
     # 12-conv CNN → 14 arch layers → auto → 'name' → no shape dims in labels
     spec = nsx.build_nnsvg_spec(_large_cnn_spec(12))
-    for l in spec.layers:
-        if l.label and l.layer_type in ("conv", "dense"):
+    for s in spec.layers:
+        if s.label and s.layer_type in ("conv", "dense"):
             # Name-only: no digit + 'x' pattern (which would indicate a shape dim)
-            has_shape_dim = any(c.isdigit() for c in l.label) and "x" in l.label
+            has_shape_dim = any(c.isdigit() for c in s.label) and "x" in s.label
             assert not has_shape_dim, (
-                f"Auto mode for large CNN should use name-only; got shape in label: {l.label!r}"
+                f"Auto mode for large CNN should use name-only; got shape in label: {s.label!r}"
             )
 
 
 def test_detail_level_full_preserves_all_layer_labels():
     """With detail_level='full', every conv layer must have a non-empty label."""
     spec = nsx.build_nnsvg_spec(_large_cnn_spec(10), detail_level="full")
-    conv_layers = [l for l in spec.layers if l.layer_type == "conv" and l.channels != 1]
-    assert all(l.label for l in conv_layers), (
+    conv_layers = [s for s in spec.layers if s.layer_type == "conv" and s.channels != 1]
+    assert all(s.label for s in conv_layers), (
         "detail_level='full' should not thin labels; some are empty"
     )
 
@@ -729,7 +729,7 @@ def test_small_cnn_compact_labels_include_shape():
         ],
     }
     spec = nsx.build_nnsvg_spec(tiny)
-    labels = " ".join(l.label for l in spec.layers if l.label)
+    labels = " ".join(s.label for s in spec.layers if s.label)
     # Compact mode should include at least some numeric dimension info
     has_dims = any(c.isdigit() for c in labels)
     assert has_dims, f"Compact labels for small model should include dims: {labels!r}"
@@ -786,15 +786,15 @@ def test_transformer_block_labels_fit_at_min_font():
     }
     spec = nsx.build_nnsvg_spec(trans_spec)
     MIN_FONT = 8
-    for l in spec.layers:
-        if l.layer_type == "conv" and l.channels == 1 and l.label:
-            avail = l.feature_map_width - 8
+    for s in spec.layers:
+        if s.layer_type == "conv" and s.channels == 1 and s.label:
+            avail = s.feature_map_width - 8
             # Multi-line labels: measure against the LONGEST LINE, not total len.
-            max_line_len = max(len(line) for line in l.label.split("\n"))
+            max_line_len = max(len(line) for line in s.label.split("\n"))
             required_font = avail / (max_line_len * 0.62) if max_line_len else MIN_FONT
             assert required_font >= MIN_FONT, (
-                f"Block label {l.label!r} (max line {max_line_len} chars) "
-                f"in fmW={l.feature_map_width} "
+                f"Block label {s.label!r} (max line {max_line_len} chars) "
+                f"in fmW={s.feature_map_width} "
                 f"would need font_size={required_font:.1f}pt < minimum {MIN_FONT}pt"
             )
 
@@ -810,9 +810,9 @@ def test_safe_label_policy_direct():
     ]
     # 480px canvas, 3 layers: slot=120px, safe_chars≈12
     result = _safe_label_policy(layers, 480, 12, allow_thinning=False)
-    for l in result:
-        if l.label:
-            assert len(l.label) <= 15, f"Label not truncated: {l.label!r}"
+    for s in result:
+        if s.label:
+            assert len(s.label) <= 15, f"Label not truncated: {s.label!r}"
 
 
 def test_safe_label_policy_skips_box_layers():
@@ -843,7 +843,7 @@ def test_compact_label_conv_shows_channels_and_kernel():
         ],
     }
     spec = nsx.build_nnsvg_spec(spec_dict, label_mode="compact")
-    conv_labels = [l.label for l in spec.layers if l.layer_type == "conv" and l.channels != 1]
+    conv_labels = [s.label for s in spec.layers if s.layer_type == "conv" and s.channels != 1]
     # At least one conv label should show "Conv", channels, and kernel info
     assert any("Conv" in lb and ("32" in lb or "k3" in lb) for lb in conv_labels), (
         f"Compact label should show op type + channels + kernel; got: {conv_labels}"
@@ -862,7 +862,7 @@ def test_compact_label_pool_shows_pool_type():
         ],
     }
     spec = nsx.build_nnsvg_spec(spec_dict, label_mode="compact")
-    pool_labels = [l.label for l in spec.layers if l.layer_type == "pool"]
+    pool_labels = [s.label for s in spec.layers if s.layer_type == "pool"]
     assert any("MaxP" in lb or "AvgP" in lb or "Pool" in lb for lb in pool_labels), (
         f"Pool compact label should show pool type; got: {pool_labels}"
     )
@@ -879,7 +879,7 @@ def test_compact_label_dense_shows_units():
         ],
     }
     spec = nsx.build_nnsvg_spec(spec_dict, label_mode="compact")
-    dense_labels = [l.label for l in spec.layers if l.layer_type == "dense"]
+    dense_labels = [s.label for s in spec.layers if s.layer_type == "dense"]
     assert any("256" in lb for lb in dense_labels), (
         f"Dense compact label should show units; got: {dense_labels}"
     )
@@ -900,7 +900,7 @@ def test_compact_label_gap_is_gap():
         ],
     }
     spec = nsx.build_nnsvg_spec(spec_dict, label_mode="compact")
-    labels = [l.label for l in spec.layers]
+    labels = [s.label for s in spec.layers]
     # After summary grouping (7 arch layers → compact auto), GAP may be inside a block
     # but "GAP" should appear somewhere OR be absorbed into a block summary
     # Either way, the op type must be recognisable
@@ -923,7 +923,7 @@ def test_large_cnn_summary_blocks_have_conv_info():
         ),
     }
     spec = nsx.build_nnsvg_spec(large_spec, detail_level="summary")
-    block_labels = [l.label for l in spec.layers if l.layer_type == "conv" and l.channels == 1]
+    block_labels = [s.label for s in spec.layers if s.layer_type == "conv" and s.channels == 1]
     assert len(block_labels) > 0, "Summary should produce ch=1 block labels"
     # At least one block should mention conv count or channel info
     combined = "\n".join(block_labels)
@@ -949,9 +949,9 @@ def test_large_cnn_summary_multiple_blocks():
         ),
     }
     spec = nsx.build_nnsvg_spec(large_spec, detail_level="summary")
-    block_labels = [l.label for l in spec.layers if "Block" in l.label]
+    block_labels = [s.label for s in spec.layers if "Block" in s.label]
     assert len(block_labels) >= 2, (
-        f"Large CNN summary should have multiple named blocks; got: {[l.label for l in spec.layers]}"
+        f"Large CNN summary should have multiple named blocks; got: {[s.label for s in spec.layers]}"
     )
 
 
@@ -967,7 +967,7 @@ def test_transformer_block_labels_include_mh_attn():
         ],
     }
     spec = nsx.build_nnsvg_spec(trans_spec)
-    labels = [l.label for l in spec.layers]
+    labels = [s.label for s in spec.layers]
     combined = "\n".join(labels)
     assert "MH-Attn" in combined or "Attn" in combined, (
         f"Transformer block should include [MH-Attn]; got: {labels}"
@@ -985,7 +985,7 @@ def test_transformer_block_labels_include_ffn():
         ],
     }
     spec = nsx.build_nnsvg_spec(trans_spec)
-    labels = [l.label for l in spec.layers]
+    labels = [s.label for s in spec.layers]
     combined = "\n".join(labels)
     assert "FFN" in combined or "FeedFwd" in combined, (
         f"Transformer block should include [FFN]; got: {labels}"
@@ -1002,7 +1002,7 @@ def test_upsample_shape_inference():
         ],
     }
     arch = nsx.parse_model(spec_dict)
-    up_layer = next(l for l in arch.layers if l.name == "up1")
+    up_layer = next(s for s in arch.layers if s.name == "up1")
     # Expect output [1, 128, 16, 16]
     assert up_layer.output_shape == [1, 128, 16, 16], (
         f"Upsample scale_factor=2 should double spatial dims; got {up_layer.output_shape}"
@@ -1019,7 +1019,7 @@ def test_attention_shape_preserved():
         ],
     }
     arch = nsx.parse_model(spec_dict)
-    attn = next(l for l in arch.layers if l.name == "attn1")
+    attn = next(s for s in arch.layers if s.name == "attn1")
     # Attention output should preserve the input shape [1, 512]
     assert attn.output_shape == [1, 512], (
         f"Attention output should preserve input shape; got {attn.output_shape}"
@@ -1041,7 +1041,177 @@ def test_debug_json_preserves_add_and_norm_layers(tmp_path: Path):
     nsx.save_debug_json(out, trans_spec)
     import json
     data = json.loads(out.read_text())
-    kinds = [l["kind"] for l in data["layers"]]
+    kinds = [s["kind"] for s in data["layers"]]
     assert "attention" in kinds,  f"Debug JSON must preserve attention; got {kinds}"
     assert "add" in kinds,        f"Debug JSON must preserve add; got {kinds}"
     assert "layer_norm" in kinds, f"Debug JSON must preserve layernorm; got {kinds}"
+
+
+# ── Visual-quality systemic policy tests ────────────────────────────────────
+
+def test_mlp_subtitle_includes_layer_and_stage_count():
+    """Subtitle must distinguish original layer count from visual stage count."""
+    # 7-layer MLP but activations are fused → fewer visual stages
+    spec = nsx.build_nnsvg_spec({
+        "model_name": "mlp",
+        "layers": [
+            {"name": "input", "kind": "input", "shape": [1, 784]},
+            {"name": "fc1", "kind": "dense", "units": 256},
+            {"name": "relu1", "kind": "relu"},
+            {"name": "fc2", "kind": "dense", "units": 128},
+            {"name": "relu2", "kind": "relu"},
+            {"name": "fc3", "kind": "dense", "units": 64},
+            {"name": "out", "kind": "dense", "units": 10},
+        ],
+    })
+    # subtitle must contain layer count (7 arch layers)
+    assert "7" in spec.subtitle, f"Subtitle should mention 7 layers: {spec.subtitle!r}"
+    # When visual stages != layer count, subtitle should note both
+    if len(spec.layers) != 7:
+        assert "stages" in spec.subtitle or str(len(spec.layers)) in spec.subtitle, (
+            f"Subtitle should note visual stage count: {spec.subtitle!r}"
+        )
+
+
+def test_mlp_output_layer_labeled_output():
+    """The last dense layer in an MLP should be labeled 'Output N'."""
+    spec = nsx.build_nnsvg_spec({
+        "model_name": "mlp",
+        "layers": [
+            {"name": "input", "kind": "input", "shape": [1, 784]},
+            {"name": "fc1", "kind": "dense", "units": 128},
+            {"name": "out", "kind": "dense", "units": 10},
+        ],
+    })
+    last_label = spec.layers[-1].label
+    assert "Output" in last_label or "output" in last_label.lower(), (
+        f"Last MLP layer should be labeled 'Output N'; got {last_label!r}"
+    )
+    assert "10" in last_label, f"Output label should include unit count; got {last_label!r}"
+
+
+def test_cnn_classifier_layer_labeled_classifier():
+    """The last dense layer in a CNN should be labeled 'Classifier N'."""
+    spec = nsx.build_nnsvg_spec({
+        "model_name": "cnn",
+        "layers": [
+            {"name": "input", "kind": "input", "shape": [1, 1, 28, 28]},
+            {"name": "conv1", "kind": "conv", "out_channels": 16, "kernel_size": [3, 3]},
+            {"name": "pool1", "kind": "maxpool", "kernel_size": [2, 2]},
+            {"name": "fc1", "kind": "dense", "units": 10},
+        ],
+    })
+    dense_labels = [s.label for s in spec.layers if s.layer_type == "dense"]
+    assert dense_labels, "CNN should have at least one dense spec layer"
+    last = dense_labels[-1]
+    assert "Classifier" in last or "classifier" in last.lower(), (
+        f"Last CNN dense layer should be 'Classifier'; got {last!r}"
+    )
+
+
+def test_block_summary_uses_cross_conv_format():
+    """Summary block labels must use '×Conv' format, not raw abbreviations like '4cv'."""
+    spec = nsx.build_nnsvg_spec({
+        "model_name": "vgg",
+        "layers": (
+            [{"name": "input", "kind": "input", "shape": [1, 3, 224, 224]}]
+            + [{"name": f"c{i}", "kind": "conv", "out_channels": 64, "kernel_size": [3, 3]}
+               for i in range(6)]
+            + [{"name": "pool1", "kind": "maxpool", "kernel_size": [2, 2], "stride": [2, 2]}]
+            + [{"name": f"c{i+6}", "kind": "conv", "out_channels": 128, "kernel_size": [3, 3]}
+               for i in range(6)]
+            + [{"name": "pool2", "kind": "maxpool", "kernel_size": [2, 2], "stride": [2, 2]}]
+            + [{"name": "fc", "kind": "dense", "units": 1000}]
+        ),
+    }, detail_level="summary")
+    block_labels = [s.label for s in spec.layers if "Block" in s.label]
+    # Must use "×Conv" (cross/times symbol), not raw "cv" abbreviation
+    for lb in block_labels:
+        assert "×Conv" in lb, (
+            f"Block label must use '×Conv' format, not abbreviation; got {lb!r}"
+        )
+    # Must also include channel count
+    assert any("ch" in lb or "128" in lb or "64" in lb for lb in block_labels), (
+        f"Block labels should include channel info; got: {block_labels}"
+    )
+
+
+def test_resnet_summary_labels_mention_skip_collapsed():
+    """ResNet residual block labels must note that skip links are collapsed."""
+    spec = nsx.build_nnsvg_spec(_resnet_spec(), detail_level="summary")
+    res_labels = [s.label for s in spec.layers if "Residual" in s.label or "Res Block" in s.label]
+    assert res_labels, f"Expected residual block labels; got {[s.label for s in spec.layers]}"
+    combined = "\n".join(res_labels)
+    assert "skip" in combined.lower() or "collapsed" in combined.lower(), (
+        f"Residual block labels should mention skip-collapsed; got: {res_labels}"
+    )
+
+
+def test_unet_summary_labels_mention_concat_collapsed():
+    """U-Net encoder/decoder labels must note concat/skip links are collapsed."""
+    spec = nsx.build_nnsvg_spec(_unet_spec(), detail_level="summary")
+    encoder_labels = [s.label for s in spec.layers if "Encoder" in s.label or "Decoder" in s.label]
+    assert encoder_labels, f"Expected encoder/decoder labels; got {[s.label for s in spec.layers]}"
+    combined = "\n".join(encoder_labels)
+    assert (
+        "concat" in combined.lower()
+        or "skip" in combined.lower()
+        or "collapsed" in combined.lower()
+        or "debug" in combined.lower()
+    ), f"Encoder/decoder labels should mention concat-collapsed; got: {encoder_labels}"
+
+
+def test_transformer_unsupported_generates_diagnostic_content():
+    """Unsupported mode must produce a labeled diagnostic block, not a tiny placeholder."""
+    spec = nsx.build_nnsvg_spec(_transformer_spec(), transformer_mode="unsupported")
+    assert len(spec.layers) == 1, "Unsupported should produce a single diagnostic block"
+    label = spec.layers[0].label
+    # Must say more than just "(not supported)"
+    assert len(label) > 20, f"Diagnostic label is too short: {label!r}"
+    # Must contain actionable guidance
+    assert "block_summary" in label or "not supported" in label.lower(), (
+        f"Diagnostic must reference block_summary mode; got {label!r}"
+    )
+
+
+def test_transformer_unsupported_block_is_wide_enough():
+    """The unsupported block must be wide enough to display multi-line content."""
+    spec = nsx.build_nnsvg_spec(_transformer_spec(), transformer_mode="unsupported")
+    box = spec.layers[0]
+    assert box.channels == 1, "Diagnostic block should be ch=1 (box style)"
+    assert box.feature_map_width >= 160, (
+        f"Diagnostic block must be wide for multi-line content; got fmW={box.feature_map_width}"
+    )
+
+
+def test_transformer_unsupported_subtitle_explains():
+    """Unsupported mode subtitle must be informative, not just the family name."""
+    spec = nsx.build_nnsvg_spec(_transformer_spec(), transformer_mode="unsupported")
+    assert spec.subtitle, "Subtitle must not be empty for unsupported mode"
+    assert "not supported" in spec.subtitle.lower() or "block_summary" in spec.subtitle, (
+        f"Subtitle should explain the unsupported situation; got {spec.subtitle!r}"
+    )
+
+
+def test_summary_subtitle_shows_visual_stage_count():
+    """When summary mode reduces many layers to few blocks, subtitle must note both."""
+    large_spec = {
+        "model_name": "deep_cnn",
+        "layers": (
+            [{"name": "input", "kind": "input", "shape": [1, 3, 224, 224]}]
+            + [{"name": f"c{i}", "kind": "conv", "out_channels": 64, "kernel_size": [3, 3]}
+               for i in range(16)]
+            + [{"name": "fc", "kind": "dense", "units": 1000}]
+        ),
+    }
+    spec = nsx.build_nnsvg_spec(large_spec, detail_level="summary")
+    # Should have fewer spec layers than arch layers (18 total, summarized)
+    assert len(spec.layers) < 10, "Summary should reduce many layers to fewer blocks"
+    # Subtitle should mention original layer count
+    assert "18" in spec.subtitle or "layers" in spec.subtitle, (
+        f"Subtitle should mention original layer count; got {spec.subtitle!r}"
+    )
+    if len(spec.layers) < 18:
+        assert "stages" in spec.subtitle or str(len(spec.layers)) in spec.subtitle, (
+            f"Subtitle should also mention visual stage count; got {spec.subtitle!r}"
+        )

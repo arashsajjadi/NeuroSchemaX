@@ -99,8 +99,13 @@ def _make_subtitle(
     arch: SemanticArchitecture,
     has_approx: bool,
     is_transformer_block: bool = False,
+    n_spec_layers: int = 0,
 ) -> str:
-    """Build a one-line metadata subtitle for the diagram header."""
+    """Build a metadata subtitle for the diagram header.
+
+    When the number of visual stages (spec layers) differs from the original
+    layer count, both are shown so users understand how much was grouped.
+    """
     parts: list[str] = []
     if is_transformer_block:
         parts.append("Transformer block summary")
@@ -108,6 +113,8 @@ def _make_subtitle(
         parts.append(_FAMILY_DISPLAY.get(family, family.value))
     parts.append("approximate" if has_approx else "exact")
     parts.append(f"{arch.layer_count} layers")
+    if n_spec_layers > 0 and n_spec_layers != arch.layer_count:
+        parts.append(f"{n_spec_layers} visual stages")
     return " · ".join(parts)
 
 
@@ -309,41 +316,50 @@ def _safe_label_policy(
 
     # Skip layers whose labels are already inside boxes (ch == 1 blocks).
     # Those are handled by JS auto-scaling.
-    def _is_box_layer(l: NNSVGLayerSpec) -> bool:
-        return l.layer_type != "dense" and l.channels == 1
+    def _is_box_layer(layer: NNSVGLayerSpec) -> bool:
+        return layer.layer_type != "dense" and layer.channels == 1
 
     needs_action = any(
-        len(l.label) > safe_chars
-        for l in spec_layers
-        if l.label and not _is_box_layer(l)
+        len(layer.label) > safe_chars
+        for layer in spec_layers
+        if layer.label and not _is_box_layer(layer)
     )
     if not needs_action:
         return spec_layers
 
     # Step 1: truncate long labels.
-    for l in spec_layers:
-        if l.label and not _is_box_layer(l) and len(l.label) > safe_chars:
-            l.label = _truncate(l.label, safe_chars)
+    for layer in spec_layers:
+        if layer.label and not _is_box_layer(layer) and len(layer.label) > safe_chars:
+            layer.label = _truncate(layer.label, safe_chars)
 
     # Step 2: thin if budget is very tight and thinning is permitted.
     if allow_thinning and safe_chars < 5:
-        for i, l in enumerate(spec_layers):
-            if i % 2 != 0 and l.layer_type not in ("input",) and not _is_box_layer(l):
-                l.label = ""
+        for i, layer in enumerate(spec_layers):
+            if i % 2 != 0 and layer.layer_type not in ("input",) and not _is_box_layer(layer):
+                layer.label = ""
 
     return spec_layers
 
 
 def _color_for(kind: LayerKind) -> str:
-    if kind == LayerKind.INPUT:      return _COLORS["input"]
-    if kind in _CONV_KINDS:          return _COLORS["conv"]
-    if kind in _POOL_KINDS:          return _COLORS["pool"]
-    if kind == LayerKind.DENSE:      return _COLORS["dense"]
-    if kind == LayerKind.OUTPUT:     return _COLORS["output"]
-    if kind in _NORM_KINDS:          return _COLORS["norm"]
-    if kind in _ACTIVATION_KINDS:    return _COLORS["activation"]
-    if kind == LayerKind.ATTENTION:  return _COLORS["attention"]
-    if kind in _RECURRENT_KINDS:     return _COLORS["recurrent"]
+    if kind == LayerKind.INPUT:
+        return _COLORS["input"]
+    if kind in _CONV_KINDS:
+        return _COLORS["conv"]
+    if kind in _POOL_KINDS:
+        return _COLORS["pool"]
+    if kind == LayerKind.DENSE:
+        return _COLORS["dense"]
+    if kind == LayerKind.OUTPUT:
+        return _COLORS["output"]
+    if kind in _NORM_KINDS:
+        return _COLORS["norm"]
+    if kind in _ACTIVATION_KINDS:
+        return _COLORS["activation"]
+    if kind == LayerKind.ATTENTION:
+        return _COLORS["attention"]
+    if kind in _RECURRENT_KINDS:
+        return _COLORS["recurrent"]
     return _COLORS["other"]
 
 
@@ -353,10 +369,13 @@ def _summarize_sequential(spec_layers: list[NNSVGLayerSpec]) -> list[NNSVGLayerS
     """Group consecutive conv/pool layers into informative 'Block N' ch=1 boxes.
 
     Uses ch=1 (single-rectangle) blocks so LeNet.js can render multi-line
-    labels inside the box.  Each block label shows the conv count, output
-    channels, and a ↓ marker when a pool layer is present.
+    labels inside the box.  Each block label includes:
+    - block index
+    - conv count with kernel size: ``4×Conv k3``
+    - output channel count: ``, 64ch``
+    - pool/downsampling marker: ``Pool ↓2``
 
-    Example block label:   ``Block 2\\n4cv 128ch ↓``
+    Example:   ``Block 2\\n4×Conv k3, 128ch\\nPool ↓2``
     """
     result: list[NNSVGLayerSpec] = []
     i = 0
@@ -364,21 +383,21 @@ def _summarize_sequential(spec_layers: list[NNSVGLayerSpec]) -> list[NNSVGLayerS
     block_num = 0
 
     while i < n:
-        l = spec_layers[i]
+        cur = spec_layers[i]
 
-        if l.layer_type == "input":
-            result.append(l)
+        if cur.layer_type == "input":
+            result.append(cur)
             i += 1
 
-        elif l.layer_type == "conv":
-            # Absorb consecutive convs, then include one pool if present.
-            # Splitting at pool boundaries gives meaningful per-stage blocks.
+        elif cur.layer_type == "conv":
+            # Absorb consecutive convs then include one pool if present.
             j = i + 1
             while j < n and spec_layers[j].layer_type == "conv":
                 j += 1
             has_pool = j < n and spec_layers[j].layer_type == "pool"
+            pool_spec = spec_layers[j] if has_pool else None
             if has_pool:
-                j += 1  # include the pool in this block
+                j += 1
 
             block_num += 1
             group = spec_layers[i: j - (1 if has_pool else 0)]
@@ -386,45 +405,50 @@ def _summarize_sequential(spec_layers: list[NNSVGLayerSpec]) -> list[NNSVGLayerS
             last_conv = conv_layers[-1] if conv_layers else group[-1]
             n_conv = len(conv_layers)
 
-            line2_parts: list[str] = []
-            if n_conv:
-                line2_parts.append(f"{n_conv}cv")
-            if last_conv.channels:
-                line2_parts.append(f"{last_conv.channels}ch")
-            if has_pool:
-                line2_parts.append("↓")
-            label = f"Block {block_num}"
-            if line2_parts:
-                label += "\n" + " ".join(line2_parts)
+            # Kernel info: if all convs share the same kernel, show it once.
+            kernels = {s.kernel_size for s in conv_layers if s.kernel_size}
+            kern_str = f" k{kernels.pop()}" if len(kernels) == 1 else ""
+
+            ch_str = f", {last_conv.channels}ch" if last_conv.channels else ""
+            line2 = f"{n_conv}×Conv{kern_str}{ch_str}"
+
+            label = f"Block {block_num}\n{line2}"
+            if has_pool and pool_spec is not None:
+                pool_k = pool_spec.kernel_size
+                pool_s = pool_spec.stride
+                pool_str = f"Pool ↓{pool_s}" if pool_s and pool_s > 1 else (
+                    f"Pool k{pool_k}" if pool_k else "Pool ↓"
+                )
+                label += f"\n{pool_str}"
 
             result.append(NNSVGLayerSpec(
                 layer_type="conv",
                 label=label,
-                channels=1,          # ch=1 = box rendering with inside label
-                feature_map_width=80,
-                feature_map_height=72,
+                channels=1,          # ch=1 = box rendering with multi-line inside label
+                feature_map_width=88,
+                feature_map_height=80,
                 color=last_conv.color,
             ))
             i = j
 
-        elif l.layer_type == "pool":
-            # Standalone pool not absorbed by a preceding conv group — skip it.
+        elif cur.layer_type == "pool":
             i += 1
 
-        elif l.layer_type == "dense":
-            # All remaining dense layers → single Classifier box.
+        elif cur.layer_type == "dense":
+            # All remaining dense layers → Classifier box.
+            units_str = f" {cur.units}" if cur.units else ""
             result.append(NNSVGLayerSpec(
                 layer_type="conv",
-                label="Classifier",
+                label=f"Classifier{units_str}",
                 channels=1,
-                feature_map_width=72,
-                feature_map_height=60,
+                feature_map_width=80,
+                feature_map_height=64,
                 color=_COLORS["output"],
             ))
             break
 
         else:
-            result.append(l)
+            result.append(cur)
             i += 1
 
     return result
@@ -436,32 +460,36 @@ def _summarize_residual(
 ) -> list[NNSVGLayerSpec]:
     """Block summary for ResNet/U-Net architectures with merge ops.
 
-    Produces ch=1 box blocks with multi-line informative labels:
-      ResNet: Input → Stem → Res Block 1 → ... → Res Block N → Head
-      U-Net:  Input → Encoder\\n↓conv → Bottleneck → Decoder\\n↑conv → Output
+    Produces ch=1 box blocks with informative labels that explicitly note
+    when skip connections or concat links have been collapsed.
+
+    ResNet: Input → Stem → Residual Block 1 → ... → Residual Block N → Head
+    U-Net:  Input → Encoder → Bottleneck → Decoder → Segmentation Head
     """
     has_concat = any(lay.kind == LayerKind.CONCAT for lay in arch.layers)
     result: list[NNSVGLayerSpec] = []
 
-    # Preserve input block if present.
     if spec_layers and spec_layers[0].layer_type == "input":
         result.append(spec_layers[0])
 
     if has_concat:
-        # U-Net style encoder-decoder with multi-line box blocks.
+        # U-Net style encoder-decoder.  Concat/skip links are collapsed;
+        # the label makes this explicit.
         result += [
             NNSVGLayerSpec(
-                layer_type="conv", label="Encoder\n↓conv",
-                channels=1, feature_map_width=80, feature_map_height=80,
+                layer_type="conv",
+                label="Encoder\n↓ conv stages\nskip→debug JSON",
+                channels=1, feature_map_width=88, feature_map_height=88,
                 color=_COLORS["conv"],
             ),
             NNSVGLayerSpec(
                 layer_type="conv", label="Bottleneck",
-                channels=1, feature_map_width=72, feature_map_height=60,
+                channels=1, feature_map_width=80, feature_map_height=64,
                 color=_COLORS["pool"],
             ),
             NNSVGLayerSpec(
-                layer_type="conv", label="Decoder\n↑conv",
+                layer_type="conv",
+                label="Decoder\n↑ conv stages\nconcat→debug JSON",
                 channels=1, feature_map_width=80, feature_map_height=80,
                 color=_COLORS["conv"],
             ),
@@ -472,23 +500,23 @@ def _summarize_residual(
             ),
         ]
     else:
-        # ResNet style — group conv layers between Add ops.
+        # ResNet style — skip links are collapsed; label notes this explicitly.
         add_count = sum(1 for lay in arch.layers if lay.kind == LayerKind.ADD)
-        # Stem: ch=1 box so multi-line label renders inside
         result.append(NNSVGLayerSpec(
             layer_type="conv", label="Stem\nconv",
-            channels=1, feature_map_width=72, feature_map_height=64,
+            channels=1, feature_map_width=80, feature_map_height=68,
             color=_COLORS["conv"],
         ))
         for b in range(max(1, add_count)):
             result.append(NNSVGLayerSpec(
-                layer_type="conv", label=f"Res Block {b + 1}\n2×conv",
-                channels=1, feature_map_width=80, feature_map_height=80,
-                color=_COLORS["norm"],   # purple-ish marks residual blocks
+                layer_type="conv",
+                label=f"Residual Block {b + 1}\n+skip collapsed\nsee debug JSON",
+                channels=1, feature_map_width=96, feature_map_height=92,
+                color=_COLORS["norm"],
             ))
         result.append(NNSVGLayerSpec(
             layer_type="conv", label="Head",
-            channels=1, feature_map_width=64, feature_map_height=56,
+            channels=1, feature_map_width=72, feature_map_height=60,
             color=_COLORS["output"],
         ))
 
@@ -704,6 +732,13 @@ def _map_fcnn(
 
         i += 1 + (1 if fused_act else 0)
 
+    # Relabel the last dense layer as "Output N" (more meaningful than "Dense N").
+    dense_specs = [s for s in specs if s.layer_type == "dense"]
+    if dense_specs:
+        last = dense_specs[-1]
+        u = last.units or 0
+        last.label = _truncate(f"Output {u}" if u else "Output")
+
     return specs
 
 
@@ -811,6 +846,12 @@ def _map_lenet(
 
         i += 1 + (1 if absorb else 0)
 
+    # Relabel the last dense column as "Classifier" (units are capped for display;
+    # the actual classifier size lives in the architecture spec and debug JSON).
+    dense_specs = [s for s in specs if s.layer_type == "dense"]
+    if dense_specs:
+        dense_specs[-1].label = "Classifier"
+
     return specs
 
 
@@ -903,6 +944,11 @@ def _map_alexnet(
 
         i += 1 + (1 if absorb else 0)
 
+    # Relabel the last dense column as "Classifier".
+    dense_specs = [s for s in specs if s.layer_type == "dense"]
+    if dense_specs:
+        dense_specs[-1].label = "Classifier"
+
     return specs
 
 
@@ -943,17 +989,39 @@ def map_to_nnsvg(
     )
 
     is_transformer_block = False
+    _unsupported_subtitle: str = ""
     if has_seq_op and config.style is None:
         if config.transformer_mode == "unsupported":
+            # Build a professional diagnostic block instead of a tiny placeholder.
+            detected: list[str] = []
+            if any(lay.kind == LayerKind.EMBEDDING for lay in arch.layers):
+                detected.append("Embedding")
+            if any(lay.kind == LayerKind.ATTENTION for lay in arch.layers):
+                detected.append("Attention")
+            if any(lay.kind in _RECURRENT_KINDS for lay in arch.layers):
+                detected.append("Recurrent")
+            if any(lay.kind == LayerKind.DENSE for lay in arch.layers):
+                detected.append("Dense / FFN")
+            detected_str = "\n" + ", ".join(detected) if detected else ""
+            diag_label = (
+                "[Not Supported]\n"
+                "Use transformer_mode=\n"
+                '"block_summary" for\n'
+                f"an approximate view.{detected_str}"
+            )
             layers = [NNSVGLayerSpec(
                 layer_type="conv",
-                label="(not supported)",
+                label=diag_label,
                 channels=1,
-                feature_map_width=80,
-                feature_map_height=40,
-                color=_COLORS["other"],
+                feature_map_width=240,
+                feature_map_height=220,
+                color="#E8EAF6",   # light indigo — clearly different from normal diagram
             )]
             family = RenderFamily.LENET
+            _unsupported_subtitle = (
+                "Transformer exact rendering not supported  ·  "
+                'set transformer_mode="block_summary" for an approximate view'
+            )
         else:
             layers = _map_transformer_blocks(arch, config)
             family = RenderFamily.LENET
@@ -985,7 +1053,12 @@ def map_to_nnsvg(
 
     # ── Subtitle ──────────────────────────────────────────────────────────
     has_approx = bool(arch.warnings) and config.approximate_mode != "allow"
-    subtitle = _make_subtitle(family, arch, has_approx, is_transformer_block)
+    if _unsupported_subtitle:
+        subtitle = _unsupported_subtitle
+    else:
+        subtitle = _make_subtitle(
+            family, arch, has_approx, is_transformer_block, n_spec_layers=len(layers)
+        )
 
     # ── Suppress warning badges when approximate_mode="allow" ────────────
     warnings_for_html = list(arch.warnings) if config.approximate_mode != "allow" else []

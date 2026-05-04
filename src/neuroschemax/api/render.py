@@ -231,10 +231,10 @@ def _build_reason(arch: SemanticArchitecture) -> str:
     if conv_count > 3:
         if has_skip:
             merge_layers = [
-                l for l in arch.layers
-                if l.kind in (LayerKind.ADD, LayerKind.CONCAT, LayerKind.MULTIPLY)
+                lay for lay in arch.layers
+                if lay.kind in (LayerKind.ADD, LayerKind.CONCAT, LayerKind.MULTIPLY)
             ]
-            if any(l.kind == LayerKind.CONCAT for l in merge_layers):
+            if any(lay.kind == LayerKind.CONCAT for lay in merge_layers):
                 return (
                     f"Deep CNN ({conv_count} convs) with Concat operations "
                     "(U-Net/encoder-decoder); mapped to AlexNet — branches collapsed"
