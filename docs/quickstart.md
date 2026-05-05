@@ -103,12 +103,17 @@ fig.save_html("diagram.html")
 
 - **Script / terminal** — saves to a temp file and opens in the browser.
 
-`fig.to_html()` returns the self-contained HTML string for manual display:
+`fig.to_notebook_html()` returns a notebook-safe iframe wrapper for manual display:
 
 ```python
 from IPython.display import HTML, display
-display(HTML(fig.to_html()))
+display(HTML(fig.to_notebook_html()))
 ```
+
+`fig.to_html()` returns the full standalone HTML document for writing to a file.
+Do not pass `to_html()` directly to `display(HTML(...))` in Colab — it will
+print raw CSS and JavaScript as visible text.  Use `to_notebook_html()` or
+`fig.show()` instead.
 
 ## Next steps
 

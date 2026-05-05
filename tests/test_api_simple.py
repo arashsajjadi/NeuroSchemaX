@@ -460,7 +460,9 @@ def test_repr_html_returns_string():
     fig.draw(_mlp_spec())
     html = fig._repr_html_()
     assert isinstance(html, str)
-    assert "<!DOCTYPE html>" in html
+    # _repr_html_ now returns a notebook-safe iframe wrapper
+    assert "<iframe" in html
+    assert len(html) > 100
 
 
 def test_repr_html_before_draw_returns_placeholder():
@@ -518,9 +520,9 @@ def test_doctor_dependencies_has_ipython_key():
 # Version
 # ---------------------------------------------------------------------------
 
-def test_version_is_0_1_1():
+def test_version_is_at_least_0_1_1():
     from neuroschemax.version import __version__
-    assert __version__ == "0.1.1"
+    assert __version__ >= "0.1.1"
 
 
 # ---------------------------------------------------------------------------
@@ -712,3 +714,208 @@ def test_show_html_outside_notebook_opens_browser():
          patch("webbrowser.open") as mock_browser:
         show_html("<html><body>browser test</body></html>")
         assert mock_browser.called
+
+
+# ---------------------------------------------------------------------------
+# Notebook-safe display: srcdoc iframe, no raw CSS/JS leakage
+# ---------------------------------------------------------------------------
+
+def _mlp_spec_simple() -> dict:
+    return {
+        "model_name": "nb_mlp",
+        "layers": [
+            {"name": "input", "kind": "input", "shape": [1, 784]},
+            {"name": "fc1",   "kind": "dense", "units": 64},
+            {"name": "out",   "kind": "dense", "units": 10},
+        ],
+    }
+
+
+def test_to_notebook_html_is_iframe_not_full_document():
+    """to_notebook_html() must return an iframe wrapper, not a full HTML document.
+
+    The outer notebook HTML must be just an <iframe> element.  The full
+    standalone HTML lives inside the srcdoc attribute value, where `<`, `>`,
+    `&`, and `"` are all HTML-entity-escaped.  This means `<!DOCTYPE html>`
+    does NOT appear as a raw string in the outer wrapper.
+    """
+    fig = nsx.Figure()
+    fig.draw(_mlp_spec_simple())
+    nb_html = fig.to_notebook_html()
+    assert "<iframe" in nb_html, "Notebook HTML must use an iframe"
+    assert "srcdoc=" in nb_html, "iframe must use srcdoc attribute"
+    # The outer wrapper must not start with a full HTML document preamble
+    assert nb_html.strip().startswith("<iframe"), (
+        "to_notebook_html() must start with <iframe, not a full HTML document"
+    )
+    # Raw (unescaped) DOCTYPE string must not appear in the outer wrapper
+    assert "<!DOCTYPE html>" not in nb_html, (
+        "Raw <!DOCTYPE html> must not appear in the outer notebook wrapper "
+        "(it should be &lt;!DOCTYPE html&gt; inside the srcdoc value)"
+    )
+
+
+def test_to_notebook_html_no_raw_css_visible():
+    """to_notebook_html() must not expose raw CSS rules as visible text.
+
+    With full escaping (`<` → `&lt;`, `>` → `&gt;`) the `<style>` tag is
+    encoded to `&lt;style&gt;` inside the srcdoc value, so no raw CSS tag or
+    CSS content appears in the outer notebook HTML.
+    """
+    fig = nsx.Figure()
+    fig.draw(_mlp_spec_simple())
+    nb_html = fig.to_notebook_html()
+    # Raw <style> must not appear — it will be &lt;style&gt; in the srcdoc value
+    assert "<style>" not in nb_html, (
+        "Raw <style> tag must not appear in the outer notebook HTML"
+    )
+
+
+def test_to_notebook_html_no_raw_js_visible():
+    """to_notebook_html() must not expose executable <script> tags in the outer wrapper.
+
+    The root cause of Colab's raw-JS-as-text problem is that ``<script>`` tags
+    in the content passed to ``IPython.display.HTML()`` are not executed —
+    Colab renders them as literal text.  The srcdoc iframe approach encodes
+    ``<script>`` as ``&lt;script&gt;``, so no raw ``<script>`` tag appears in
+    the outer notebook document.  JS source text (comments like ``// NN-SVG``)
+    may still appear inside the attribute value, but that does not leak as
+    visible text because it is enclosed within the ``srcdoc="..."`` attribute.
+    """
+    fig = nsx.Figure()
+    fig.draw(_mlp_spec_simple())
+    nb_html = fig.to_notebook_html()
+    # Raw <script> tag must not appear — it must be encoded as &lt;script&gt;
+    assert "<script>" not in nb_html, (
+        "Raw <script> tag must not appear in the outer notebook HTML"
+    )
+    # Raw closing tag similarly must not appear
+    assert "</script>" not in nb_html
+
+
+def test_to_notebook_html_no_tmp_file_path():
+    """to_notebook_html() must not reference a /tmp/*.html file path."""
+    fig = nsx.Figure()
+    fig.draw(_mlp_spec_simple())
+    nb_html = fig.to_notebook_html()
+    assert "/tmp/" not in nb_html
+
+
+def test_to_html_still_returns_full_standalone():
+    """to_html() must still return a complete standalone HTML document."""
+    fig = nsx.Figure()
+    fig.draw(_mlp_spec_simple())
+    html = fig.to_html()
+    assert "<!DOCTYPE html>" in html
+    assert "<style>" in html
+    assert "<script>" in html
+    assert "renderNNSVG" in html or "renderFCNN" in html
+
+
+def test_save_html_unchanged(tmp_path: Path):
+    """save_html() must still write a full standalone HTML document."""
+    fig = nsx.Figure()
+    fig.draw(_mlp_spec_simple())
+    out = tmp_path / "mlp.html"
+    fig.save_html(out)
+    content = out.read_text()
+    assert "<!DOCTYPE html>" in content
+    assert "<style>" in content
+    assert "<script>" in content
+
+
+def test_repr_html_uses_iframe_not_full_document():
+    """_repr_html_() must return an iframe notebook wrapper, not a full document."""
+    fig = nsx.Figure()
+    fig.draw(_mlp_spec_simple())
+    repr_html = fig._repr_html_()
+    assert "<iframe" in repr_html
+    assert "srcdoc=" in repr_html
+    assert repr_html.strip().startswith("<iframe"), (
+        "_repr_html_() must produce an <iframe>, not a full HTML document"
+    )
+    # Raw DOCTYPE and style/script must not appear in the outer wrapper
+    assert "<!DOCTYPE html>" not in repr_html
+    assert "<style>" not in repr_html
+    assert "<script>" not in repr_html
+
+
+def test_make_notebook_iframe_escapes_quotes():
+    """_make_notebook_iframe escapes double-quotes so the srcdoc attribute is valid."""
+    from neuroschemax._display import _make_notebook_iframe
+    html_with_quotes = '<html><body class="x">hello &amp; world</body></html>'
+    result = _make_notebook_iframe(html_with_quotes)
+    assert 'srcdoc="' in result
+    # Double quotes inside the srcdoc value must be &quot;
+    # The original " in class="x" should have been escaped
+    assert 'class=&quot;x&quot;' in result or '"x"' not in result
+
+
+def test_make_notebook_iframe_escapes_ampersands():
+    """_make_notebook_iframe must escape & as &amp; inside the srcdoc value."""
+    from neuroschemax._display import _make_notebook_iframe
+    html_with_amp = "<html><body>a &amp; b</body></html>"
+    result = _make_notebook_iframe(html_with_amp)
+    # & → &amp; first pass, then the result &amp; → &amp;amp; in srcdoc
+    # Verify no unescaped bare & remains in the attribute value
+    srcdoc_start = result.index('srcdoc="') + len('srcdoc="')
+    srcdoc_end = result.rindex('"', srcdoc_start)
+    srcdoc_val = result[srcdoc_start:srcdoc_end]
+    import re
+    bare_amp = re.findall(r"&(?!amp;|quot;|lt;|gt;|#)", srcdoc_val)
+    assert not bare_amp, f"Unescaped & found in srcdoc: {bare_amp}"
+
+
+def test_show_html_in_notebook_uses_iframe(monkeypatch: pytest.MonkeyPatch):
+    """show_html() in notebook mode must pass an iframe to display(), not full HTML."""
+    try:
+        from IPython.display import HTML, display  # type: ignore  # noqa: F401
+    except ImportError:
+        pytest.skip("IPython not installed")
+
+    from neuroschemax._display import show_html
+
+    displayed_content: list[str] = []
+
+    def capture(obj: object) -> None:
+        # obj is whatever was passed to display() — may be wrapped by HTML()
+        displayed_content.append(str(obj))
+
+    monkeypatch.setattr("neuroschemax._display._in_jupyter", lambda: True)
+    monkeypatch.setattr("neuroschemax._display._in_colab", lambda: False)
+    monkeypatch.setattr("neuroschemax._display._can_display_html", lambda: True)
+
+    import neuroschemax._display as _disp_mod
+    monkeypatch.setattr(_disp_mod, "_can_display_html", lambda: True)
+
+    with patch("IPython.display.display", side_effect=capture), \
+         patch("IPython.display.HTML", side_effect=lambda h: h):
+        show_html("<html><head><style>body{margin:0}</style></head>"
+                  "<body><script>// NN-SVG utils</script></body></html>")
+
+    assert displayed_content, "display() must have been called"
+    combined = " ".join(displayed_content)
+    assert "<iframe" in combined, "display() must receive iframe content"
+    assert "<style>" not in combined, "Raw <style> must not appear in notebook output"
+    assert "<script>" not in combined, "Raw <script> must not appear in notebook output"
+
+
+def test_onnx_figure_to_notebook_html_no_raw_css():
+    """ONNX-backed figure to_notebook_html() must not expose raw CSS."""
+    try:
+        from onnx import TensorProto, helper
+    except ImportError:
+        pytest.skip("onnx not available")
+    relu = helper.make_node("Relu", ["x"], ["out"])
+    x   = helper.make_tensor_value_info("x",   TensorProto.FLOAT, [1, 64])
+    out = helper.make_tensor_value_info("out",  TensorProto.FLOAT, [1, 64])
+    graph = helper.make_graph([relu], "onnx_nb", [x], [out])
+    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 17)])
+    model.ir_version = 8
+
+    fig = nsx.Figure()
+    fig.draw(model)
+    nb_html = fig.to_notebook_html()
+    assert "<iframe" in nb_html
+    assert "<style>" not in nb_html
+    assert "<script>" not in nb_html

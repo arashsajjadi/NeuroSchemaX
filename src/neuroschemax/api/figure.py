@@ -126,33 +126,50 @@ class Figure:
         show_html(html)
 
     def to_html(self, **kwargs: Any) -> str:
-        """Return the rendered diagram as a self-contained HTML string.
+        """Return the full self-contained HTML string for this diagram.
 
-        This is the notebook/Colab-friendly alternative to :meth:`save_html`.
-        The returned string can be passed to ``IPython.display.HTML(fig.to_html())``
-        or written to a file without any further dependencies.
+        This produces the same output as :meth:`save_html` — a complete
+        standalone document with embedded CSS and JavaScript suitable for
+        writing to a file or opening in a browser.
 
-        Example (Colab / Jupyter)::
-
-            from IPython.display import HTML, display
-            display(HTML(fig.to_html()))
+        .. note::
+            Passing this directly to ``IPython.display.HTML()`` in Colab will
+            print raw CSS/JS as visible text.  Use :meth:`show` or
+            :meth:`to_notebook_html` for notebook display.
         """
         arch = self._require_arch()
         from .render import render_network_html
         merged = self._merged_kwargs(kwargs)
         return render_network_html(arch, **merged)
 
+    def to_notebook_html(self, width: int = 1200, height: int = 520, **kwargs: Any) -> str:
+        """Return notebook-safe HTML for inline display.
+
+        Wraps the standalone HTML in an ``<iframe srcdoc="...">`` so that CSS
+        and JavaScript execute inside the browser's iframe sandbox without
+        leaking raw source as visible notebook output.
+
+        This is what :meth:`show` uses internally.  Pass the result to
+        ``IPython.display.HTML()`` for manual control::
+
+            from IPython.display import HTML, display
+            display(HTML(fig.to_notebook_html()))
+        """
+        standalone = self.to_html(**kwargs)
+        from .._display import to_notebook_html
+        return to_notebook_html(standalone, width=width, height=height)
+
     def _repr_html_(self) -> str:
         """Jupyter/IPython rich display hook.
 
         When a :class:`Figure` is the last expression in a cell, Jupyter
-        automatically calls this and renders the diagram inline.  No manual
-        ``display()`` call is needed.
+        automatically calls this and renders the diagram inline via a sandboxed
+        iframe — no raw CSS/JS leaks into the notebook output.
         """
         if self._arch is None:
             return "<pre>Figure: no architecture loaded. Call draw() first.</pre>"
         try:
-            return self.to_html()
+            return self.to_notebook_html()
         except Exception as exc:  # noqa: BLE001
             return f"<pre>Figure: render error — {exc}</pre>"
 

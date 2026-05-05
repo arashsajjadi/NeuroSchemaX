@@ -10,10 +10,9 @@ from pathlib import Path
 def _can_display_html() -> bool:
     """Return True when IPython.display.HTML / display are importable.
 
-    This is the correct test for notebook-display capability — not whether the
-    *ipython* package (lowercase) can be imported as a module, but whether the
-    actual display API is available.  Colab and Jupyter both satisfy this even
-    when ``import ipython`` (lowercase) would fail.
+    Tests the actual display API, not whether the *ipython* package (lowercase)
+    can be imported as a module.  Colab and Jupyter both satisfy this even when
+    ``import ipython`` (lowercase) would fail.
     """
     try:
         from IPython.display import HTML, display  # type: ignore[import]  # noqa: F401
@@ -44,19 +43,65 @@ def _in_colab() -> bool:
         return False
 
 
+def _make_notebook_iframe(standalone_html: str, width: int = 1200, height: int = 520) -> str:
+    """Wrap *standalone_html* in an ``<iframe srcdoc="...">`` element.
+
+    This is the notebook-safe display method.  Passing a full ``<html>``
+    document directly to ``IPython.display.HTML()`` causes Colab to render raw
+    ``<style>`` and ``<script>`` blocks as visible text rather than executing
+    them.  The ``srcdoc`` iframe sandboxes the document so the browser (not the
+    notebook's DOM) handles rendering — CSS and JS execute correctly inside the
+    frame, and no raw source leaks into the visible notebook output.
+
+    The HTML content is escaped for use inside an HTML attribute value:
+      - ``&`` → ``&amp;``  (must come first)
+      - ``<`` → ``&lt;``
+      - ``>`` → ``&gt;``
+      - ``"`` → ``&quot;``
+
+    Escaping ``<`` and ``>`` ensures that no raw ``<style>``, ``<script>``,
+    or ``<!DOCTYPE>`` strings appear in the outer notebook HTML, which prevents
+    Colab from mis-parsing the attribute and leaking CSS/JS as visible text.
+    The browser decodes these entities back to the original characters when it
+    loads the srcdoc iframe content.
+    """
+    escaped = (
+        standalone_html
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+    )
+    return (
+        f'<iframe srcdoc="{escaped}" '
+        f'width="{width}" height="{height}" '
+        f'style="border:none;width:100%;overflow:hidden;" '
+        f'frameborder="0"></iframe>'
+    )
+
+
+def to_notebook_html(standalone_html: str, width: int = 1200, height: int = 520) -> str:
+    """Return notebook-safe display HTML for *standalone_html*.
+
+    The result is a minimal ``<iframe srcdoc="...">`` wrapper that embeds
+    the full standalone HTML inside a sandboxed frame.  Callers can pass this
+    to ``IPython.display.HTML(...)`` without leaking raw CSS/JS as visible text.
+    """
+    return _make_notebook_iframe(standalone_html, width=width, height=height)
+
+
 def show_html(html: str) -> None:
     """Display *html*:
 
-    - **Jupyter / JupyterLab / VS Code notebooks**: renders inline via
-      ``IPython.display.HTML``.
-    - **Google Colab**: renders inline via ``IPython.display.HTML``.  Full
-      JavaScript interactivity may be restricted by Colab's content-security
-      policy; call ``fig.save_html("diagram.html")`` and download the file
-      for the fully interactive version.
+    - **Jupyter / JupyterLab / VS Code notebooks**: renders inline via an
+      ``iframe srcdoc`` wrapper so CSS and JS execute correctly without
+      leaking raw source as visible notebook output.
+    - **Google Colab**: same srcdoc iframe approach.  In Colab a brief message
+      notes that ``fig.save_html()`` gives the fully interactive version.
     - **Script / terminal**: saves to a temp file and opens in the browser.
 
-    The generated HTML is self-contained in all cases — saving to a file
-    always works regardless of display environment.
+    The generated HTML is self-contained — ``save_html()`` / ``savefig()`` are
+    unchanged and always produce the full standalone document.
     """
     if (_in_jupyter() or _in_colab()) and _can_display_html():
         _show_inline(html)
@@ -66,24 +111,24 @@ def show_html(html: str) -> None:
 
 
 def _show_inline(html: str) -> None:
-    """Render *html* inline using ``IPython.display.HTML``.
+    """Render *html* inside a sandboxed iframe in the notebook.
 
-    In Colab, the browser's content-security policy may suppress JavaScript
-    inside ``display(HTML(...))`` blocks.  We print a brief note when running
-    in Colab so the user knows to download the file for the fully interactive
-    diagram.  We do NOT fall back to a local-file IFrame because Colab's
-    browser sandbox cannot access ``/tmp/`` paths on the VM.
+    Uses ``<iframe srcdoc="...">`` so the full standalone HTML (including
+    ``<style>`` and ``<script>`` blocks) is passed to the browser for rendering
+    inside the frame.  This prevents Colab from printing raw CSS/JS as visible
+    text while still executing the NN-SVG JavaScript renderer.
     """
     from IPython.display import HTML, display  # type: ignore[import]
 
     if _in_colab():
         print(
-            "NeuroSchemaX: showing inline preview.  "
-            "For full JavaScript interactivity, run:\n"
+            "NeuroSchemaX: inline preview below.  "
+            "For full interactivity run:\n"
             "  fig.save_html('diagram.html')  # then download via Files panel"
         )
 
-    display(HTML(html))
+    notebook_html = _make_notebook_iframe(html)
+    display(HTML(notebook_html))
 
 
 def _show_browser(html: str) -> None:
