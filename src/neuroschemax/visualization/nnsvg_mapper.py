@@ -125,6 +125,24 @@ def _format_title(raw_name: str) -> str:
     return " ".join(_WORD_OVERRIDES.get(w.lower(), w.capitalize()) for w in words)
 
 
+def _arch_family_name(family: RenderFamily, arch: SemanticArchitecture) -> str:
+    """Return a human-readable architecture label that reflects the actual topology.
+
+    For any CNN-routed architecture (LeNet or AlexNet), distinguish between:
+      - U-Net-like (Concat / encoder-decoder)   → "U-Net summary"
+      - ResNet-like (Add / residual)             → "ResNet summary"
+      - True sequential (no merge ops)           → "LeNet-style" / "AlexNet-style"
+    """
+    if family in (RenderFamily.LENET, RenderFamily.ALEXNET):
+        has_concat = any(lay.kind == LayerKind.CONCAT for lay in arch.layers)
+        has_add = any(lay.kind == LayerKind.ADD for lay in arch.layers)
+        if has_concat:
+            return "U-Net summary"
+        if has_add:
+            return "ResNet summary"
+    return _FAMILY_DISPLAY.get(family, family.value)
+
+
 def _make_subtitle(
     family: RenderFamily,
     arch: SemanticArchitecture,
@@ -134,14 +152,16 @@ def _make_subtitle(
 ) -> str:
     """Build a metadata subtitle for the diagram header.
 
-    When the number of visual stages (spec layers) differs from the original
-    layer count, both are shown so users understand how much was grouped.
+    Uses the architecture-aware family name so ResNet/U-Net architectures
+    are not misleadingly labeled as "AlexNet-style".
+    When the number of visual stages differs from the original layer count,
+    both are shown so users understand how much was grouped.
     """
     parts: list[str] = []
     if is_transformer_block:
         parts.append("Transformer block summary")
     else:
-        parts.append(_FAMILY_DISPLAY.get(family, family.value))
+        parts.append(_arch_family_name(family, arch))
     parts.append("approximate" if has_approx else "exact")
     parts.append(f"{arch.layer_count} layers")
     if n_spec_layers > 0 and n_spec_layers != arch.layer_count:
@@ -640,19 +660,31 @@ def _apply_detail_level(
     arch: SemanticArchitecture,
     detail_level: str,
 ) -> list[NNSVGLayerSpec]:
-    """Apply summary grouping according to *detail_level*."""
-    effective = detail_level
-    if detail_level == "auto" and len(spec_layers) > 12:
-        effective = "summary"
+    """Apply summary grouping according to *detail_level*.
 
-    if effective != "summary":
-        return spec_layers
+    Auto mode forces summary grouping when:
+    - There are more than 12 spec layers (large sequential CNN), OR
+    - The architecture contains merge operations (Add/Concat — ResNet/U-Net).
+
+    This ensures ResNet and U-Net architectures always route to the residual
+    summary grouper (which labels Residual Blocks, Encoder, Bottleneck,
+    Decoder) rather than showing individual conv layers in a flat AlexNet
+    column view.  Users can override with ``detail_level="full"`` to see
+    every individual layer regardless.
+    """
+    effective = detail_level
 
     # Check for merge operations in the original arch.
     has_merge = any(
         lay.kind in (LayerKind.ADD, LayerKind.CONCAT, LayerKind.MULTIPLY)
         for lay in arch.layers
     )
+
+    if detail_level == "auto" and (len(spec_layers) > 12 or has_merge):
+        effective = "summary"
+
+    if effective != "summary":
+        return spec_layers
 
     if has_merge:
         return _summarize_residual(spec_layers, arch)

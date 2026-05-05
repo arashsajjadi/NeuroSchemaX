@@ -1907,3 +1907,274 @@ def test_show_legend_in_nnsvg_spec():
     assert spec2.show_legend is False
     d = spec2.to_dict()
     assert d["showLegend"] is False
+
+
+# ── Family mapping and summary rendering: ResNet / U-Net / AlexNet ──────────
+
+def _resnet_manual_spec() -> dict:
+    return {
+        "model_name": "resnet_like",
+        "layers": [
+            {"name": "input", "kind": "input", "shape": [1, 3, 224, 224]},
+            {"name": "c1", "kind": "conv", "out_channels": 64, "kernel_size": [3, 3]},
+            {"name": "c2", "kind": "conv", "out_channels": 64, "kernel_size": [3, 3]},
+            {"name": "c3", "kind": "conv", "out_channels": 64, "kernel_size": [3, 3]},
+            {"name": "c4", "kind": "conv", "out_channels": 64, "kernel_size": [3, 3]},
+            {"name": "add1", "kind": "add"},
+            {"name": "fc", "kind": "dense", "units": 10},
+        ],
+    }
+
+
+def _unet_manual_spec() -> dict:
+    return {
+        "model_name": "unet_like",
+        "layers": [
+            {"name": "input", "kind": "input", "shape": [1, 1, 64, 64]},
+            {"name": "e1", "kind": "conv", "out_channels": 64, "kernel_size": [3, 3]},
+            {"name": "e2", "kind": "conv", "out_channels": 128, "kernel_size": [3, 3]},
+            {"name": "bot", "kind": "conv", "out_channels": 256, "kernel_size": [3, 3]},
+            {"name": "up", "kind": "upsample", "scale_factor": 2},
+            {"name": "d1", "kind": "conv", "out_channels": 128, "kernel_size": [3, 3]},
+            {"name": "cat", "kind": "concat"},
+            {"name": "out", "kind": "conv", "out_channels": 1, "kernel_size": [1, 1]},
+        ],
+    }
+
+
+def _vgg_sequential_spec() -> dict:
+    layers = [{"name": "input", "kind": "input", "shape": [1, 3, 224, 224]}]
+    for i in range(6):
+        layers.append({"name": f"c{i}", "kind": "conv",
+                       "out_channels": 64, "kernel_size": [3, 3]})
+    for i in range(6):
+        layers.append({"name": f"c{i + 6}", "kind": "conv",
+                       "out_channels": 128, "kernel_size": [3, 3]})
+    layers.append({"name": "fc", "kind": "dense", "units": 1000})
+    return {"model_name": "vgg_like", "layers": layers}
+
+
+# -- Subtitle / label correctness --
+
+def test_resnet_manual_subtitle_not_alexnet_style():
+    """ResNet-like manual spec must not be subtitled 'AlexNet-style'."""
+    spec = nsx.build_nnsvg_spec(_resnet_manual_spec())
+    assert "AlexNet" not in spec.subtitle, (
+        f"ResNet subtitle must not say AlexNet-style, got: {spec.subtitle!r}"
+    )
+    assert "ResNet" in spec.subtitle or "resnet" in spec.subtitle.lower(), (
+        f"ResNet subtitle must identify the architecture: {spec.subtitle!r}"
+    )
+
+
+def test_unet_manual_subtitle_not_alexnet_style():
+    """U-Net-like manual spec must not be subtitled 'AlexNet-style'."""
+    spec = nsx.build_nnsvg_spec(_unet_manual_spec())
+    assert "AlexNet" not in spec.subtitle, (
+        f"U-Net subtitle must not say AlexNet-style, got: {spec.subtitle!r}"
+    )
+    assert "U-Net" in spec.subtitle or "unet" in spec.subtitle.lower(), (
+        f"U-Net subtitle must identify the architecture: {spec.subtitle!r}"
+    )
+
+
+def test_vgg_sequential_subtitle_is_alexnet_style():
+    """Sequential VGG-like CNN must still be labeled 'AlexNet-style'."""
+    spec = nsx.build_nnsvg_spec(_vgg_sequential_spec())
+    assert "AlexNet" in spec.subtitle, (
+        f"Sequential VGG-like CNN should be AlexNet-style, got: {spec.subtitle!r}"
+    )
+
+
+# -- ResNet summary rendering --
+
+def test_resnet_manual_auto_detail_produces_residual_blocks():
+    """With default detail_level=auto, ResNet-like model must produce residual block labels."""
+    spec = nsx.build_nnsvg_spec(_resnet_manual_spec())
+    labels = [s.label for s in spec.layers]
+    combined = "\n".join(labels)
+    assert any("Residual" in lb or "Res Block" in lb or "Block" in lb for lb in labels), (
+        f"ResNet auto-detail must produce residual block labels, got: {labels}"
+    )
+    assert "skip collapsed" in combined.lower() or "skip" in combined.lower(), (
+        f"ResNet blocks must mention skip-collapsed; got labels: {labels}"
+    )
+
+
+def test_resnet_manual_full_detail_shows_individual_convs():
+    """With detail_level=full, ResNet-like model shows individual conv layers."""
+    spec = nsx.build_nnsvg_spec(_resnet_manual_spec(), detail_level="full")
+    # 4 conv + input + classifier — should have more stages than summary
+    assert len(spec.layers) >= 4, (
+        f"detail_level=full should show individual layers, got {len(spec.layers)}"
+    )
+
+
+def test_resnet_not_flat_alexnet_columns():
+    """ResNet summary must not produce a flat line of identical conv-column layers."""
+    spec = nsx.build_nnsvg_spec(_resnet_manual_spec())
+    # All non-input ch=1 blocks with same channel and fmW is the 'flat AlexNet' failure
+    non_input = [s for s in spec.layers if s.layer_type != "input"]
+    # Summary residual blocks should have ch=1 box labels, not individually flat convs
+    # Key check: no layer should be labeled raw 'Conv 64 k3' (individual flat conv)
+    raw_conv_count = sum(1 for s in non_input if s.label.startswith("Conv "))
+    assert raw_conv_count < len(non_input), (
+        f"ResNet should not show all raw conv columns; got {raw_conv_count} conv labels"
+    )
+
+
+# -- U-Net summary rendering --
+
+def test_unet_manual_auto_detail_produces_encoder_decoder():
+    """With default detail_level=auto, U-Net-like model must show Encoder/Decoder labels."""
+    spec = nsx.build_nnsvg_spec(_unet_manual_spec())
+    labels = [s.label for s in spec.layers]
+    combined = "\n".join(labels)
+    assert "Encoder" in combined, f"U-Net must have Encoder block, got: {labels}"
+    assert "Decoder" in combined, f"U-Net must have Decoder block, got: {labels}"
+    assert "Bottleneck" in combined, f"U-Net must have Bottleneck block, got: {labels}"
+
+
+def test_unet_decoder_mentions_concat_collapsed():
+    """U-Net decoder label must mention concat/skip collapsed."""
+    spec = nsx.build_nnsvg_spec(_unet_manual_spec())
+    decoder_labels = [s.label for s in spec.layers if "Decoder" in s.label]
+    assert decoder_labels, f"No Decoder label found in {[s.label for s in spec.layers]}"
+    combined = "\n".join(decoder_labels)
+    assert "concat" in combined.lower() or "skip" in combined.lower(), (
+        f"Decoder label must mention concat/skip collapsed; got: {decoder_labels}"
+    )
+
+
+# -- ONNX support --
+
+def _make_onnx_resnet():
+    """Minimal ONNX graph with Add (residual-style)."""
+    try:
+        from onnx import TensorProto, helper
+    except ImportError:
+        import pytest
+        pytest.skip("onnx not available")
+    conv1 = helper.make_node("Conv", ["x","w1","b1"], ["c1"], kernel_shape=[3,3], pads=[1,1,1,1])
+    conv2 = helper.make_node("Conv", ["c1","w2","b2"], ["c2"], kernel_shape=[3,3], pads=[1,1,1,1])
+    add   = helper.make_node("Add", ["x","c2"], ["out"])
+    x    = helper.make_tensor_value_info("x",  TensorProto.FLOAT, [1,64,32,32])
+    w1_i = helper.make_tensor("w1", TensorProto.FLOAT, [64,64,3,3], [0.0]*36864)
+    b1_i = helper.make_tensor("b1", TensorProto.FLOAT, [64], [0.0]*64)
+    w2_i = helper.make_tensor("w2", TensorProto.FLOAT, [64,64,3,3], [0.0]*36864)
+    b2_i = helper.make_tensor("b2", TensorProto.FLOAT, [64], [0.0]*64)
+    out  = helper.make_tensor_value_info("out", TensorProto.FLOAT, None)
+    graph = helper.make_graph([conv1, conv2, add], "resnet_onnx",
+        [x, helper.make_tensor_value_info("w1", TensorProto.FLOAT, [64,64,3,3]),
+            helper.make_tensor_value_info("b1", TensorProto.FLOAT, [64]),
+            helper.make_tensor_value_info("w2", TensorProto.FLOAT, [64,64,3,3]),
+            helper.make_tensor_value_info("b2", TensorProto.FLOAT, [64])],
+        [out], initializer=[w1_i, b1_i, w2_i, b2_i])
+    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 17)])
+    model.ir_version = 8
+    return model
+
+
+def _make_onnx_unet():
+    """Minimal ONNX graph with Concat (encoder-decoder-style)."""
+    try:
+        from onnx import TensorProto, helper
+    except ImportError:
+        import pytest
+        pytest.skip("onnx not available")
+    conv1  = helper.make_node("Conv",   ["x","w1","b1"], ["c1"],   kernel_shape=[3,3], pads=[1,1,1,1])
+    conv2  = helper.make_node("Conv",   ["c1","w2","b2"],["c2"],   kernel_shape=[3,3], pads=[1,1,1,1])
+    concat = helper.make_node("Concat", ["c1","c2"],     ["cat"],  axis=1)
+    out_v  = helper.make_tensor_value_info("out", TensorProto.FLOAT, None)
+    x    = helper.make_tensor_value_info("x",  TensorProto.FLOAT, [1,32,64,64])
+    w1_i = helper.make_tensor("w1", TensorProto.FLOAT, [32,32,3,3], [0.0]*9216)
+    b1_i = helper.make_tensor("b1", TensorProto.FLOAT, [32], [0.0]*32)
+    w2_i = helper.make_tensor("w2", TensorProto.FLOAT, [32,32,3,3], [0.0]*9216)
+    b2_i = helper.make_tensor("b2", TensorProto.FLOAT, [32], [0.0]*32)
+    graph = helper.make_graph([conv1, conv2, concat], "unet_onnx",
+        [x, helper.make_tensor_value_info("w1", TensorProto.FLOAT, [32,32,3,3]),
+            helper.make_tensor_value_info("b1", TensorProto.FLOAT, [32]),
+            helper.make_tensor_value_info("w2", TensorProto.FLOAT, [32,32,3,3]),
+            helper.make_tensor_value_info("b2", TensorProto.FLOAT, [32])],
+        [out_v], initializer=[w1_i, b1_i, w2_i, b2_i])
+    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 17)])
+    model.ir_version = 8
+    return model
+
+
+def test_onnx_resnet_subtitle_says_resnet_summary():
+    """ONNX graph with Add op must be subtitled 'ResNet summary', not 'AlexNet-style'."""
+    model = _make_onnx_resnet()
+    spec = nsx.build_nnsvg_spec(model)
+    assert "AlexNet" not in spec.subtitle, (
+        f"ONNX ResNet subtitle must not say AlexNet-style: {spec.subtitle!r}"
+    )
+    assert "ResNet" in spec.subtitle, (
+        f"ONNX ResNet subtitle must say ResNet summary: {spec.subtitle!r}"
+    )
+
+
+def test_onnx_resnet_produces_residual_block_labels():
+    """ONNX graph with Add op must produce Residual Block labels."""
+    model = _make_onnx_resnet()
+    spec = nsx.build_nnsvg_spec(model)
+    labels = [s.label for s in spec.layers]
+    assert any("Residual" in lb or "Block" in lb for lb in labels), (
+        f"ONNX ResNet must have residual block labels, got: {labels}"
+    )
+
+
+def test_onnx_unet_subtitle_says_unet_summary():
+    """ONNX graph with Concat op must be subtitled 'U-Net summary', not 'AlexNet-style'."""
+    model = _make_onnx_unet()
+    spec = nsx.build_nnsvg_spec(model)
+    assert "AlexNet" not in spec.subtitle, (
+        f"ONNX U-Net subtitle must not say AlexNet-style: {spec.subtitle!r}"
+    )
+    assert "U-Net" in spec.subtitle, (
+        f"ONNX U-Net subtitle must say U-Net summary: {spec.subtitle!r}"
+    )
+
+
+def test_onnx_unet_produces_encoder_decoder_labels():
+    """ONNX graph with Concat op must produce Encoder/Decoder labels."""
+    model = _make_onnx_unet()
+    spec = nsx.build_nnsvg_spec(model)
+    labels = [s.label for s in spec.layers]
+    combined = "\n".join(labels)
+    assert "Encoder" in combined or "Decoder" in combined, (
+        f"ONNX U-Net must have Encoder/Decoder labels, got: {labels}"
+    )
+
+
+def test_vgg_sequential_onnx_subtitle_is_alexnet_style():
+    """ONNX sequential CNN without merge ops must still be AlexNet-style."""
+    spec = nsx.build_nnsvg_spec(_vgg_sequential_spec())
+    assert "AlexNet" in spec.subtitle, (
+        f"Sequential VGG CNN should stay AlexNet-style: {spec.subtitle!r}"
+    )
+
+
+# -- Notebook iframe height --
+
+def test_to_notebook_html_has_adequate_height():
+    """to_notebook_html() must use at least 700px height to avoid scroll within small cell."""
+    import neuroschemax as nsx
+    spec = {
+        "model_name": "test",
+        "layers": [
+            {"name": "input", "kind": "input", "shape": [1, 784]},
+            {"name": "fc1",   "kind": "dense", "units": 10},
+        ],
+    }
+    fig = nsx.Figure()
+    fig.draw(spec)
+    nb_html = fig.to_notebook_html()
+    # Extract height value from the iframe attributes
+    import re
+    m = re.search(r'height="(\d+)"', nb_html)
+    assert m, "iframe must have explicit height attribute"
+    iframe_height = int(m.group(1))
+    assert iframe_height >= 700, (
+        f"iframe height must be >= 700 for diagrams to be readable; got {iframe_height}"
+    )

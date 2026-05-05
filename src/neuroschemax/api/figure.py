@@ -142,7 +142,7 @@ class Figure:
         merged = self._merged_kwargs(kwargs)
         return render_network_html(arch, **merged)
 
-    def to_notebook_html(self, width: int = 1200, height: int = 520, **kwargs: Any) -> str:
+    def to_notebook_html(self, width: int = 1200, height: int = 780, **kwargs: Any) -> str:
         """Return notebook-safe HTML for inline display.
 
         Wraps the standalone HTML in an ``<iframe srcdoc="...">`` so that CSS

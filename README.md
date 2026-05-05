@@ -8,12 +8,22 @@ and renders them using the NN-SVG JavaScript engine — producing standalone
 HTML and SVG diagrams suitable for papers, theses, READMEs, and documentation.
 
 **Best-supported targets:** MLP/FCNN and sequential CNN-style architectures
-(LeNet-style, AlexNet/VGG-style).  ResNet, U-Net, Transformer, and other
-complex graph structures are rendered as honest approximate summaries; exact
-topology cannot be drawn for architectures that fall outside the three
-sequential NN-SVG families.
+(LeNet-style, AlexNet/VGG-style).  ResNet and U-Net architectures render as
+honest labeled summaries (Residual Blocks, Encoder/Bottleneck/Decoder).
+Transformer architectures render as conceptual block summaries.
+Exact skip/concat paths, attention flow, and arbitrary DAGs are not drawn;
+they are preserved in `export-debug-json`.
+
+> **NeuroSchemaX visualizes architecture diagrams and inferred metadata.**
+> It does **not** visualize learned weights, activation values, real
+> feature-map contents, exact attention flow, or exact skip/concat paths
+> unless those are explicitly supported for the specific architecture type.
 
 [nnsvg]: https://github.com/alexlenail/NN-SVG
+
+[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1oVe9JRJukQ5dQsFH8XoVQj6b1IDpy2MS?usp=sharing)
+
+**[Open NeuroSchemaX Colab Viewer](https://colab.research.google.com/drive/1oVe9JRJukQ5dQsFH8XoVQj6b1IDpy2MS?usp=sharing)**
 
 ---
 

@@ -43,7 +43,7 @@ def _in_colab() -> bool:
         return False
 
 
-def _make_notebook_iframe(standalone_html: str, width: int = 1200, height: int = 520) -> str:
+def _make_notebook_iframe(standalone_html: str, width: int = 1200, height: int = 780) -> str:
     """Wrap *standalone_html* in an ``<iframe srcdoc="...">`` element.
 
     This is the notebook-safe display method.  Passing a full ``<html>``
@@ -80,7 +80,7 @@ def _make_notebook_iframe(standalone_html: str, width: int = 1200, height: int =
     )
 
 
-def to_notebook_html(standalone_html: str, width: int = 1200, height: int = 520) -> str:
+def to_notebook_html(standalone_html: str, width: int = 1200, height: int = 780) -> str:
     """Return notebook-safe display HTML for *standalone_html*.
 
     The result is a minimal ``<iframe srcdoc="...">`` wrapper that embeds
