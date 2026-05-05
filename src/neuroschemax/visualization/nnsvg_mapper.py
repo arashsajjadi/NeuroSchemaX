@@ -1392,4 +1392,5 @@ def map_to_nnsvg(
         model_name=arch.model_name,
         warnings=warnings_for_html,
         diagnostic=diagnostic_payload,
+        show_legend=config.show_legend,
     )

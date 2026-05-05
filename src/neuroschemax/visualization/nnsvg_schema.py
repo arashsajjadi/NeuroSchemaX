@@ -70,6 +70,9 @@ class NNSVGSpec:
     # family.  Set by the mapper for transformer_mode="unsupported".
     diagnostic: dict[str, Any] | None = None
 
+    # Legend: when True, a colour-key and fidelity note appears in HTML output.
+    show_legend: bool = True
+
     def to_dict(self) -> dict[str, Any]:
         """Serialise to a plain dict suitable for JSON encoding."""
         return {
@@ -92,6 +95,7 @@ class NNSVGSpec:
             "modelName": self.model_name,
             "warnings": self.warnings,
             "diagnostic": self.diagnostic,
+            "showLegend": self.show_legend,
         }
 
 

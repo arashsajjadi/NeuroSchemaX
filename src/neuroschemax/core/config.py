@@ -103,6 +103,11 @@ class RenderConfig:
     #   allow — suppress warning badges (silent approximation)
     approximate_mode: str = "warn"
 
+    # show_legend: include a small colour-key and fidelity legend in HTML output
+    #   True  — render the legend below the subtitle (default for paper/thesis/readme)
+    #   False — no legend (default for debug/compact)
+    show_legend: bool = True
+
     # ── extra pass-through ──────────────────────────────────────────────
     options: dict[str, Any] = field(default_factory=dict)
 

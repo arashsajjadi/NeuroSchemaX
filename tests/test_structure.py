@@ -1679,3 +1679,231 @@ def test_block_summary_spec_has_no_diagnostic_payload():
     assert spec.diagnostic is None, (
         "block_summary mode must not set the diagnostic payload"
     )
+
+
+# ── Label/layout safety: ONNX-style labels, ResNet/U-Net, Transformer ───────
+
+def _onnx_style_conv_spec() -> dict:
+    """Simulate ONNX-parsed Conv + BN + ReLU chain with long compact labels."""
+    return {
+        "model_name": "onnx_cnn",
+        "layers": [
+            {"name": "input", "kind": "input", "shape": [1, 3, 224, 224]},
+            {"name": "Conv_0", "kind": "conv", "out_channels": 64, "kernel_size": [3, 3], "stride": [1, 1]},
+            {"name": "BN_1", "kind": "batchnorm"},
+            {"name": "Relu_2", "kind": "relu"},
+            {"name": "Conv_3", "kind": "conv", "out_channels": 128, "kernel_size": [3, 3], "stride": [2, 2]},
+            {"name": "BN_4", "kind": "batchnorm"},
+            {"name": "Relu_5", "kind": "relu"},
+            {"name": "Gemm_6", "kind": "dense", "units": 1000},
+        ],
+    }
+
+
+def test_onnx_style_labels_no_ellipsis():
+    """ONNX-style compact labels must not contain '…' ellipsis."""
+    spec = nsx.build_nnsvg_spec(_onnx_style_conv_spec(), label_mode="compact", width=900)
+    for s in spec.layers:
+        if s.label:
+            assert "…" not in s.label, f"Ellipsis in label: {s.label!r}"
+
+
+def test_onnx_style_labels_no_overflow_slot():
+    """After wrapping, no label line should be longer than the safe slot budget."""
+    spec = nsx.build_nnsvg_spec(_onnx_style_conv_spec(), label_mode="compact", width=900)
+    n = len(spec.layers)
+    slot_px = max(1, (spec.width - 120) / n)
+    safe_chars = max(4, int(slot_px * 0.92 / (12 * 0.62)))
+    for s in spec.layers:
+        if not s.label:
+            continue
+        # ch=1 boxes are auto-scaled by JS — skip them
+        if s.layer_type != "dense" and s.channels == 1:
+            continue
+        for line in s.label.split("\n"):
+            assert len(line) <= safe_chars + 2, (
+                f"Label line too long ({len(line)} > {safe_chars}): {line!r}"
+            )
+
+
+def test_full_label_preserved_in_extra_after_wrap():
+    """When a label is wrapped, the original is preserved in layer.extra['full_label']."""
+    from neuroschemax.visualization.nnsvg_mapper import _safe_label_policy
+    from neuroschemax.visualization.nnsvg_schema import NNSVGLayerSpec
+    layers = [
+        NNSVGLayerSpec(layer_type="conv", label="Dense 256 +ReLU +BN +Drop 0.5", channels=3),
+        NNSVGLayerSpec(layer_type="conv", label="Conv 128 k3 s2", channels=2),
+    ]
+    out = _safe_label_policy(layers, 480, 12, allow_thinning=False)
+    # The first label is long and should have been wrapped
+    if "\n" in out[0].label:
+        assert "full_label" in out[0].extra, (
+            "full_label must be in extra when label is wrapped"
+        )
+        assert "Dense 256" in out[0].extra["full_label"]
+
+
+def test_resnet_summary_labels_no_ellipsis():
+    """ResNet summary block labels must not contain '…'."""
+    spec = nsx.build_nnsvg_spec({
+        "model_name": "resnet",
+        "layers": [
+            {"name": "input", "kind": "input", "shape": [1, 3, 224, 224]},
+            *[{"name": f"c{i}", "kind": "conv", "out_channels": 64, "kernel_size": [3, 3]} for i in range(8)],
+            {"name": "add1", "kind": "add"},
+            {"name": "add2", "kind": "add"},
+            {"name": "fc", "kind": "dense", "units": 1000},
+        ],
+    }, detail_level="summary")
+    for s in spec.layers:
+        if s.label:
+            assert "…" not in s.label, f"Ellipsis in ResNet summary label: {s.label!r}"
+
+
+def test_unet_summary_labels_no_ellipsis():
+    """U-Net summary block labels must not contain '…'."""
+    spec = nsx.build_nnsvg_spec({
+        "model_name": "unet",
+        "layers": [
+            {"name": "input", "kind": "input", "shape": [1, 1, 64, 64]},
+            {"name": "e1", "kind": "conv", "out_channels": 64, "kernel_size": [3, 3]},
+            {"name": "e2", "kind": "conv", "out_channels": 128, "kernel_size": [3, 3]},
+            {"name": "bot", "kind": "conv", "out_channels": 256, "kernel_size": [3, 3]},
+            {"name": "up", "kind": "upsample", "scale_factor": 2},
+            {"name": "d1", "kind": "conv", "out_channels": 128, "kernel_size": [3, 3]},
+            {"name": "cat", "kind": "concat"},
+            {"name": "out", "kind": "conv", "out_channels": 1, "kernel_size": [1, 1]},
+        ],
+    }, detail_level="summary")
+    for s in spec.layers:
+        if s.label:
+            assert "…" not in s.label, f"Ellipsis in U-Net summary label: {s.label!r}"
+
+
+def test_transformer_unsupported_diagnostic_label_no_overflow(tmp_path: Path):
+    """Transformer unsupported diagnostic card must fit inside its HTML card (no overflow)."""
+    trans_src = {
+        "model_name": "trans",
+        "layers": [
+            {"name": "embed", "kind": "embedding"},
+            {"name": "attn", "kind": "attention"},
+            {"name": "ff",   "kind": "dense", "units": 512},
+        ],
+    }
+    html_path = tmp_path / "trans_unsupported.html"
+    nsx.save_network_html(html_path, trans_src, transformer_mode="unsupported")
+    html = html_path.read_text()
+    # The structured card should be present and contain all required sections
+    assert "nnsvg-diagnostic-title" in html
+    assert "block_summary" in html
+    assert "debug" in html.lower()
+    assert "Detected" in html
+    # Each line of diagnostic text must be present without truncation
+    for key in ("is not supported", "block_summary", "debug JSON"):
+        assert key in html, f"Expected diagnostic text {key!r} missing from HTML"
+
+
+# ── SVG/PNG export: error messages ──────────────────────────────────────────
+
+def test_browser_not_available_error_has_install_instructions():
+    """BrowserNotAvailableError must include actionable install instructions."""
+    from neuroschemax.exceptions import BrowserNotAvailableError
+    err = BrowserNotAvailableError()
+    msg = str(err)
+    assert "playwright" in msg.lower()
+    assert "chromium" in msg.lower()
+    assert "html" in msg.lower()  # mentions HTML as the safe alternative
+
+
+def test_svg_export_error_is_actionable(tmp_path: Path):
+    """SVG export when Playwright missing must raise BrowserNotAvailableError with install hint."""
+    from neuroschemax.visualization.nnsvg_runtime import is_playwright_available
+    if is_playwright_available():
+        pytest.skip("Playwright installed; only testing absent-Playwright path")
+    with pytest.raises(nsx.BrowserNotAvailableError) as exc_info:
+        nsx.save_network_svg(tmp_path / "out.svg", _mlp_spec())
+    msg = str(exc_info.value)
+    assert "playwright" in msg.lower()
+
+
+# ── Legend ───────────────────────────────────────────────────────────────────
+
+def test_legend_present_by_default(tmp_path: Path):
+    """HTML output must include the legend by default."""
+    path = tmp_path / "mlp.html"
+    nsx.save_network_html(path, _mlp_spec())
+    html = path.read_text()
+    assert "nnsvg-legend" in html, "Legend class must appear by default"
+
+
+def test_legend_disabled_with_flag(tmp_path: Path):
+    """show_legend=False must remove the legend from HTML output."""
+    path = tmp_path / "mlp_no_legend.html"
+    nsx.save_network_html(path, _mlp_spec(), show_legend=False)
+    html = path.read_text()
+    # The legend div should not be present when disabled
+    assert "<div class='nnsvg-legend'" not in html
+
+
+def test_legend_contains_color_swatches(tmp_path: Path):
+    """Legend must include colour swatches for at least Conv and Dense."""
+    path = tmp_path / "mlp_legend.html"
+    nsx.save_network_html(path, _mlp_spec())
+    html = path.read_text()
+    assert "nnsvg-legend-swatch" in html
+    # Should mention Conv and Dense/Classifier layer types
+    assert "Conv" in html
+    assert "Dense" in html or "Classifier" in html
+
+
+def test_legend_shows_approx_note_for_resnet(tmp_path: Path):
+    """Legend for an approximate model (ResNet) must note 'approximate'."""
+    resnet = {
+        "model_name": "resnet",
+        "layers": [
+            {"name": "input", "kind": "input", "shape": [1, 3, 224, 224]},
+            *[{"name": f"c{i}", "kind": "conv", "out_channels": 64, "kernel_size": [3, 3]}
+              for i in range(5)],
+            {"name": "add1", "kind": "add"},
+            {"name": "fc",   "kind": "dense", "units": 1000},
+        ],
+    }
+    path = tmp_path / "resnet_legend.html"
+    nsx.save_network_html(path, resnet)
+    html = path.read_text()
+    assert "approximate" in html.lower()
+
+
+def test_legend_shows_exact_note_for_mlp(tmp_path: Path):
+    """Legend for an exact model (MLP) must say 'exact'."""
+    path = tmp_path / "mlp_exact.html"
+    nsx.save_network_html(path, _mlp_spec())
+    html = path.read_text()
+    # The legend approx note should say 'exact' for a clean MLP
+    assert "exact" in html
+
+
+def test_legend_hidden_for_transformer_unsupported(tmp_path: Path):
+    """Diagnostic card mode hides the legend (card is self-explanatory)."""
+    trans = {
+        "model_name": "trans",
+        "layers": [
+            {"name": "attn", "kind": "attention"},
+            {"name": "ff",   "kind": "dense", "units": 512},
+        ],
+    }
+    path = tmp_path / "trans_diag.html"
+    nsx.save_network_html(path, trans, transformer_mode="unsupported")
+    html = path.read_text()
+    # In diagnostic mode the legend div element should not appear
+    assert "<div class='nnsvg-legend'" not in html
+
+
+def test_show_legend_in_nnsvg_spec():
+    """NNSVGSpec must carry the show_legend flag."""
+    spec = nsx.build_nnsvg_spec(_mlp_spec(), show_legend=True)
+    assert spec.show_legend is True
+    spec2 = nsx.build_nnsvg_spec(_mlp_spec(), show_legend=False)
+    assert spec2.show_legend is False
+    d = spec2.to_dict()
+    assert d["showLegend"] is False

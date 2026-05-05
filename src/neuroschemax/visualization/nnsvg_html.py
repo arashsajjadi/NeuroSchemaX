@@ -55,6 +55,7 @@ def generate_html(spec: NNSVGSpec) -> str:
 
     title = spec.title or spec.model_name or "NN-SVG Diagram"
     diagnostic_html = _render_diagnostic_card(spec)
+    legend_html = _render_legend(spec)
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -133,6 +134,34 @@ def generate_html(spec: NNSVGSpec) -> str:
     border-radius: 3px;
     font-size: 12px;
   }}
+  .nnsvg-legend {{
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 14px;
+    margin-top: 8px;
+    padding: 6px 0;
+    border-top: 1px solid #f0f0f0;
+    font-size: 10px;
+    color: #999;
+    align-items: center;
+  }}
+  .nnsvg-legend-item {{
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    white-space: nowrap;
+  }}
+  .nnsvg-legend-swatch {{
+    width: 10px;
+    height: 10px;
+    border-radius: 2px;
+    border: 1px solid rgba(0,0,0,0.15);
+    flex-shrink: 0;
+  }}
+  .nnsvg-legend-approx {{
+    font-style: italic;
+    color: #aaa;
+  }}
 </style>
 </head>
 <body>
@@ -140,6 +169,7 @@ def generate_html(spec: NNSVGSpec) -> str:
 {"<div class='nnsvg-title'>" + _escape_html(title) + "</div>" if title else ""}
 {"<div class='nnsvg-subtitle'>" + _escape_html(spec.subtitle) + "</div>" if spec.subtitle else ""}
 {_render_warnings_html(spec.warnings)}
+{legend_html}
 </div>
 {diagnostic_html}
 <div id="diagram"{' style="display:none"' if diagnostic_html else ""}></div>
@@ -344,6 +374,43 @@ def _render_warnings_html(warnings: list[str]) -> str:
         for w in warnings
     )
     return f"<div class='nnsvg-warnings'>{items}</div>"
+
+
+_LEGEND_ENTRIES: list[tuple[str, str]] = [
+    ("#9FC5E8", "Input"),
+    ("#93C47D", "Conv"),
+    ("#F6B26B", "Pool"),
+    ("#6FA8DC", "Dense"),
+    ("#E06666", "Classifier"),
+    ("#B4A7D6", "Norm"),
+    ("#EA9999", "Attention"),
+    ("#E8EAF6", "Unsupported"),
+]
+
+
+def _render_legend(spec: NNSVGSpec) -> str:
+    """Render a compact colour-key legend strip.
+
+    Only rendered when ``spec.show_legend`` is True and the spec is not in
+    full diagnostic mode (which has its own explanatory card).
+    """
+    if not spec.show_legend or spec.diagnostic:
+        return ""
+
+    is_approx = bool(spec.warnings)
+    items = "".join(
+        f"<span class='nnsvg-legend-item'>"
+        f"<span class='nnsvg-legend-swatch' style='background:{color}'></span>"
+        f"{_escape_html(label)}"
+        f"</span>"
+        for color, label in _LEGEND_ENTRIES
+    )
+    approx_note = (
+        "<span class='nnsvg-legend-approx'>· approximate — see warnings</span>"
+        if is_approx else
+        "<span class='nnsvg-legend-approx'>· exact</span>"
+    )
+    return f"<div class='nnsvg-legend'>{items}{approx_note}</div>"
 
 
 def _render_diagnostic_card(spec: NNSVGSpec) -> str:

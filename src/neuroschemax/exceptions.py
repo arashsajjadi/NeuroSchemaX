@@ -34,14 +34,23 @@ class RenderError(NeuroSchemaXError):
 
 
 class BrowserNotAvailableError(RenderError):
-    """Raised when headless browser is needed but not installed."""
+    """Raised when headless browser is needed but not installed.
 
-    def __init__(self) -> None:
-        super().__init__(
-            "SVG export requires a headless browser. Install Playwright:\n"
-            "  pip install playwright\n"
-            "  playwright install chromium"
-        )
+    Carries a user-friendly message with exact install commands.
+    Can be constructed with a custom message (e.g. when Playwright is
+    installed but Chromium is missing).
+    """
+
+    def __init__(self, message: str | None = None) -> None:
+        if message is None:
+            message = (
+                "SVG export requires Playwright and Chromium.\n"
+                "Install:  pip install playwright\n"
+                "Then:     playwright install chromium\n"
+                "Or:       pip install \"neuroschemax[svg]\"\n"
+                "\nStandalone HTML export works without any browser."
+            )
+        super().__init__(message)
 
 
 class ExportError(NeuroSchemaXError):
