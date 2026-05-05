@@ -4,12 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "neuroschemax"
-version = "0.1.0"
+version = "0.1.1"
 description = "Neural network architecture visualization & export toolkit, powered by NN-SVG."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { file = "LICENSE" }
-authors = [{ name = "NeuroSchemaX Contributors" }]
+authors = [{ name = "Arash Sajjadi", email = "arash.sajjadi@usask.ca" }]
+maintainers = [{ name = "Arash Sajjadi", email = "arash.sajjadi@usask.ca" }]
 keywords = [
     "neural-network", "visualization", "nn-svg", "onnx",
     "architecture", "diagram", "svg", "deep-learning",
@@ -27,31 +28,54 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Scientific/Engineering :: Visualization",
 ]
+# Base install: manual JSON/YAML specs + standalone HTML output.
+# ONNX support included because it is the primary real-model input format.
 dependencies = [
     "onnx>=1.14",
     "PyYAML>=6.0",
 ]
 
 [project.optional-dependencies]
-svg = ["playwright>=1.40"]
+# ONNX input (already in base; listed separately for clarity)
+onnx = ["onnx>=1.14"]
+
+# PyTorch model input (nn.Module walk or torch.onnx.export pipeline)
 torch = ["torch>=2.0"]
+
+# TensorFlow / Keras model input
 tf = ["tensorflow>=2.12"]
+
+# SVG export via headless Chromium (run `playwright install chromium` after)
+svg = ["playwright>=1.40"]
+
+# Alias for svg extra
+export = ["playwright>=1.40"]
+
+# Colab / notebook convenience — installs IPython for reliable inline display
+colab = ["ipython>=7.0"]
+
+# Development: tests, linter, build tools
 dev = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
     "ruff>=0.3",
+    "ipython>=7.0",
 ]
+
+# Everything at once (Playwright/Chromium must still be installed separately)
 all = [
+    "onnx>=1.14",
     "playwright>=1.40",
     "torch>=2.0",
     "tensorflow>=2.12",
+    "ipython>=7.0",
 ]
 
 [project.urls]
-Homepage = "https://github.com/neuroschemax/neuroschemax"
-Documentation = "https://github.com/neuroschemax/neuroschemax/tree/main/docs"
-Issues = "https://github.com/neuroschemax/neuroschemax/issues"
-Source = "https://github.com/neuroschemax/neuroschemax"
+Homepage = "https://github.com/arashsajjadi/NeuroSchemaX"
+Documentation = "https://github.com/arashsajjadi/NeuroSchemaX/tree/main/docs"
+Issues = "https://github.com/arashsajjadi/NeuroSchemaX/issues"
+Source = "https://github.com/arashsajjadi/NeuroSchemaX"
 
 [project.scripts]
 neuroschemax = "neuroschemax.cli:main"

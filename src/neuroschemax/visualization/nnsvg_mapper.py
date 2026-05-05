@@ -407,11 +407,15 @@ def _safe_label_policy(
         return layer.layer_type != "dense" and layer.channels == 1
 
     # Step 1: wrap any label whose longest line exceeds the safe budget.
+    # Preserve the original label in extra["full_label"] before wrapping so
+    # debug JSON and paper JSON always carry the complete human-readable text.
     for layer in spec_layers:
         if not layer.label or _is_box_layer(layer):
             continue
         longest = max((len(line) for line in layer.label.split("\n")), default=0)
         if longest > safe_chars:
+            if "full_label" not in layer.extra:
+                layer.extra["full_label"] = layer.label
             layer.label = _wrap_label(layer.label, safe_chars)
 
     # Step 2: extreme-density fallback — thin every other label.

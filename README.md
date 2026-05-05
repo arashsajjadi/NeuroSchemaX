@@ -42,14 +42,33 @@ pip install git+https://github.com/arashsajjadi/NeuroSchemaX.git
 Optional extras:
 
 ```bash
-pip install "neuroschemax[svg]"    # SVG export (requires headless Chromium)
-playwright install chromium
-
+pip install "neuroschemax[onnx]"   # ONNX input (already in base install)
 pip install "neuroschemax[torch]"  # PyTorch model input
 pip install "neuroschemax[tf]"     # TensorFlow / Keras model input
+pip install "neuroschemax[svg]"    # SVG export via headless Chromium
+playwright install chromium        # also required for SVG export
+
+pip install "neuroschemax[colab]"  # Colab / Jupyter inline display (IPython)
 pip install "neuroschemax[dev]"    # tests and linter
-pip install "neuroschemax[all]"    # everything
+pip install "neuroschemax[all]"    # everything except Playwright/Chromium
 ```
+
+**PyTorch → ONNX (recommended for real PyTorch models):**
+
+```bash
+pip install "neuroschemax[torch]" onnxscript
+```
+
+`onnxscript` is required by `torch.onnx.export` in `torch >= 2.x`.
+
+**Google Colab:**
+
+```bash
+!pip install "neuroschemax[colab]"
+```
+
+Save and download HTML for full interactive rendering — Colab's inline
+rendering is limited for complex JS diagrams.
 
 ---
 
@@ -317,8 +336,24 @@ See [docs/troubleshooting.md](docs/troubleshooting.md) for more.
 Yes. Generated HTML files are fully self-contained — all JS is embedded.
 
 **Q: Can I use it in a Jupyter notebook?**
-Yes. `nsx.show()` and `fig.show()` detect the runtime automatically.  Inside
-Jupyter the diagram is displayed inline; outside, it opens in the browser.
+Yes.  If `fig` is the last expression in a cell, `_repr_html_()` renders the
+diagram inline automatically.  `fig.to_html()` returns the HTML string for
+manual `display()` calls.  `nsx.show()` / `fig.show()` open in the browser
+outside notebooks.
+
+**Q: Can I use it in Google Colab?**
+Yes, with limitations.  Install with `!pip install "neuroschemax[colab]"`.
+Inline rendering in Colab is limited — use `fig.save_html("diagram.html")`
+and download the file for full interactivity.
+
+**Q: My PyTorch ONNX export fails with `No module named 'onnxscript'`.**
+`torch >= 2.x` requires `onnxscript` for `torch.onnx.export`.
+Install it: `pip install onnxscript`.
+
+**Q: Diagram shapes show `?`.**
+Shape propagation is best-effort.  Common causes: dynamic batch axes (use a
+concrete size at export), or BatchNorm/Dropout removed by ONNX exporter in
+eval mode (expected — they are folded out of the computation graph).
 
 **Q: Does it support ONNX opset X?**
 It reads graph topology and layer attributes regardless of opset version.

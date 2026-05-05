@@ -125,6 +125,37 @@ class Figure:
         html = render_network_html(arch, **merged)
         show_html(html)
 
+    def to_html(self, **kwargs: Any) -> str:
+        """Return the rendered diagram as a self-contained HTML string.
+
+        This is the notebook/Colab-friendly alternative to :meth:`save_html`.
+        The returned string can be passed to ``IPython.display.HTML(fig.to_html())``
+        or written to a file without any further dependencies.
+
+        Example (Colab / Jupyter)::
+
+            from IPython.display import HTML, display
+            display(HTML(fig.to_html()))
+        """
+        arch = self._require_arch()
+        from .render import render_network_html
+        merged = self._merged_kwargs(kwargs)
+        return render_network_html(arch, **merged)
+
+    def _repr_html_(self) -> str:
+        """Jupyter/IPython rich display hook.
+
+        When a :class:`Figure` is the last expression in a cell, Jupyter
+        automatically calls this and renders the diagram inline.  No manual
+        ``display()`` call is needed.
+        """
+        if self._arch is None:
+            return "<pre>Figure: no architecture loaded. Call draw() first.</pre>"
+        try:
+            return self.to_html()
+        except Exception as exc:  # noqa: BLE001
+            return f"<pre>Figure: render error — {exc}</pre>"
+
     # ------------------------------------------------------------------
     # JSON export helpers
     # ------------------------------------------------------------------

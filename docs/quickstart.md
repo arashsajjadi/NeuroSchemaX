@@ -65,23 +65,51 @@ with the exact install commands needed.  HTML export is never affected.
 - Labels and shape annotations shown by default
 - Paper theme applied by default — clean and minimal
 
-## Jupyter notebooks
+## Jupyter notebooks and Google Colab
 
-`nsx.show()` and `fig.show()` detect the runtime environment automatically:
+```bash
+# Colab install
+!pip install neuroschemax
+# For inline display in notebooks:
+!pip install "neuroschemax[colab]"
+```
 
-- **Inside Jupyter / IPython** — the diagram is displayed **inline** in the
-  cell output using `IPython.display`.
-- **Outside a notebook** — the rendered HTML is saved to a temporary file
-  and opened in the default web browser.
-
-IPython is not a required dependency.  If it is not installed, the browser
-fallback is used silently.
+`fig._repr_html_()` is called automatically by Jupyter when a `Figure` is the
+last expression in a cell — no manual `display()` needed:
 
 ```python
-# Works in both notebooks and scripts without any change
-nsx.draw("model.onnx")
-nsx.show()
+import neuroschemax as nsx
+fig = nsx.figure(theme="paper")
+fig.draw({"model_name": "mlp", "layers": [
+    {"name": "input", "kind": "input", "shape": [1, 784]},
+    {"name": "fc1",   "kind": "dense", "units": 128},
+    {"name": "out",   "kind": "dense", "units": 10},
+]})
+fig  # renders inline in Jupyter; opens browser outside
 ```
+
+For **Google Colab**, inline rendering is limited.  The recommended workflow
+is to save the HTML and download it:
+
+```python
+fig.save_html("diagram.html")
+# Then: Files panel → right-click diagram.html → Download
+# Open the downloaded file in Chrome/Firefox for full interactivity.
+```
+
+`fig.to_html()` returns the self-contained HTML string if you need it inline:
+
+```python
+from IPython.display import HTML, display
+display(HTML(fig.to_html()))
+```
+
+`nsx.show()` and `fig.show()` detect the runtime environment:
+
+- **Jupyter / JupyterLab** — renders inline via `IPython.display.HTML`.
+- **Google Colab** — saves to a temp file and shows an IFrame preview with a
+  download prompt; full rendering requires the downloaded HTML file.
+- **Script / terminal** — saves to a temp file and opens in the browser.
 
 ## Next steps
 

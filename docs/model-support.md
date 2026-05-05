@@ -4,13 +4,35 @@
 
 | Source | Notes |
 |---|---|
-| `.onnx` file path | Standard ONNX format |
+| `.onnx` file path | Standard ONNX format; shape inference runs automatically |
 | `.json` file path | Manual spec JSON |
 | `.yaml` / `.yml` file path | Manual spec YAML |
 | Python `dict` | Manual spec as a dict |
-| `torch.nn.Module` | Requires `pip install torch` |
-| `tf.keras.Model` | Requires `pip install tensorflow` |
+| `torch.nn.Module` | Requires `pip install torch`; module-tree walk only |
+| `tf.keras.Model` | Requires `pip install tensorflow`; layer-list walk |
 | `onnx.ModelProto` | Pre-loaded ONNX object |
+
+**PyTorch → ONNX (recommended path for real PyTorch models):**
+
+```python
+import torch, torch.nn as nn
+model = MyModel().eval()
+torch.onnx.export(model, dummy_input, "model.onnx", opset_version=17)
+arch = nsx.parse_model("model.onnx")
+```
+
+`torch.onnx.export` in `torch >= 2.x` requires `onnxscript`:
+`pip install onnxscript`.  The PyTorch adapter (direct `nn.Module` walk) does
+not capture edge connections; exporting to ONNX first gives richer shape
+information.
+
+**ONNX notes:**
+
+- ONNX exporters in eval mode fold BatchNorm and remove Dropout; these layers
+  will not appear in the parsed graph.  This is expected behavior.
+- Dynamic/symbolic dims (e.g. batch size) propagate as `"?"` strings and remain
+  visible in the summary but do not affect diagram generation.
+- Shapes are inferred via `onnx.shape_inference.infer_shapes` automatically.
 
 ## Supported outputs
 

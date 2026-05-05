@@ -26,22 +26,51 @@ def _import_onnx() -> Any:
         raise AdapterImportError("onnx", "onnx") from exc
 
 
-def _extract_shape(type_proto: Any) -> list[int | str]:
-    """Extract shape dimensions from an ONNX TypeProto."""
-    shape: list[int | str] = []
-    tensor_type = type_proto.tensor_type
-    if tensor_type.HasField("shape"):
-        for dim in tensor_type.shape.dim:
-            if dim.dim_param:
+def _type_proto(vi: Any) -> Any:
+    """Return the TypeProto from either a ValueInfoProto or a bare TypeProto."""
+    # ValueInfoProto has a .type field; TypeProto does not.
+    if hasattr(vi, "type"):
+        return vi.type
+    return vi
+
+
+def _extract_shape(vi: Any) -> list[int | str]:
+    """Extract shape dimensions from a ValueInfoProto or TypeProto.
+
+    Returns an empty list for non-tensor types or unknown shapes.
+    Never raises.
+    """
+    try:
+        tp = _type_proto(vi)
+        # Tensor type only
+        if not tp.HasField("tensor_type"):
+            return []
+        tt = tp.tensor_type
+        if not tt.HasField("shape"):
+            return []
+        shape: list[int | str] = []
+        for dim in tt.shape.dim:
+            if dim.dim_param:            # symbolic dim, e.g. "batch_size"
                 shape.append(dim.dim_param)
-            else:
+            elif dim.dim_value > 0:
                 shape.append(dim.dim_value)
-    return shape
+            else:
+                shape.append("?")        # unknown (dim_value == 0)
+        return shape
+    except Exception:  # noqa: BLE001
+        return []
 
 
-def _extract_dtype(type_proto: Any) -> str:
-    elem = type_proto.tensor_type.elem_type
-    return _ONNX_DTYPE_MAP.get(elem, f"type_{elem}")
+def _extract_dtype(vi: Any) -> str:
+    """Extract dtype string from a ValueInfoProto or TypeProto.  Never raises."""
+    try:
+        tp = _type_proto(vi)
+        if not tp.HasField("tensor_type"):
+            return "unknown"
+        elem = tp.tensor_type.elem_type
+        return _ONNX_DTYPE_MAP.get(elem, f"type_{elem}")
+    except Exception:  # noqa: BLE001
+        return "unknown"
 
 
 def _attribute_to_python(attr: Any) -> Any:
@@ -63,6 +92,18 @@ def _attribute_to_python(attr: Any) -> Any:
     return str(attr)
 
 
+def _try_infer_shapes(model: Any) -> Any:
+    """Run ONNX shape inference and return the enriched model.
+
+    Falls back to the original model if inference fails.
+    """
+    try:
+        import onnx
+        return onnx.shape_inference.infer_shapes(model)
+    except Exception:  # noqa: BLE001
+        return model
+
+
 class OnnxAdapter(BaseAdapter):
     """Parse ONNX model files into :class:`GraphIR`."""
 
@@ -74,7 +115,7 @@ class OnnxAdapter(BaseAdapter):
         try:
             onnx = _import_onnx()
             return isinstance(source, onnx.ModelProto)
-        except Exception:
+        except Exception:  # noqa: BLE001
             return False
 
     def parse(self, source: str | Path | Any) -> GraphIR:
@@ -82,14 +123,19 @@ class OnnxAdapter(BaseAdapter):
 
         model = onnx.load(str(source)) if isinstance(source, (str, Path)) else source
 
+        # Run shape inference to populate intermediate value_info shapes.
+        model = _try_infer_shapes(model)
         graph = model.graph
 
-        # Build value-info shape map
+        # Build value-info shape map from graph inputs, outputs, and
+        # intermediate tensors.  Uses defensive extraction so missing or
+        # non-tensor types silently produce empty lists.
         shape_map: dict[str, list[int | str]] = {}
         for vi in list(graph.input) + list(graph.output) + list(graph.value_info):
             shape_map[vi.name] = _extract_shape(vi)
 
-        # Inputs / outputs
+        # Inputs / outputs — skip weight initializers (they appear in graph.input
+        # too but have entries in graph.initializer).
         init_names = {init.name for init in graph.initializer}
         ir_inputs = [
             TensorInfo(
@@ -115,7 +161,10 @@ class OnnxAdapter(BaseAdapter):
 
         for idx, node in enumerate(graph.node):
             node_id = node.name or f"node_{idx}"
-            attrs = {a.name: _attribute_to_python(a) for a in node.attribute}
+            attrs: dict[str, Any] = {}
+            import contextlib
+            with contextlib.suppress(Exception):
+                attrs = {a.name: _attribute_to_python(a) for a in node.attribute}
 
             in_shapes = [shape_map.get(i, []) for i in node.input if i]
             out_shapes = [shape_map.get(o, []) for o in node.output if o]
@@ -148,7 +197,7 @@ class OnnxAdapter(BaseAdapter):
                     ))
 
         model_name = graph.name or "onnx_model"
-        metadata: dict[str, Any] = {}
+        metadata: dict[str, Any] = {"framework": "onnx"}
         if model.producer_name:
             metadata["producer"] = model.producer_name
         if model.ir_version:

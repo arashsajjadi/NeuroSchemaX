@@ -95,9 +95,18 @@ def environment_summary() -> dict[str, object]:
 
         {
             "status": "ok" | "partial" | "error",
-            "version": "0.1.0",
+            "version": "0.1.1",
             "python": "3.12.0",
             "assets": {"util.js": True, ...},
+            "capabilities": {
+                "html_export": True,     # always True when assets are present
+                "svg_export": False,     # requires Playwright + Chromium
+                "onnx_input": True,
+                "torch_input": False,
+                "tensorflow_input": False,
+                "yaml_input": True,
+                "notebook_display": False,
+            },
             "dependencies": {
                 "onnx": True,
                 "playwright": True,
@@ -105,6 +114,7 @@ def environment_summary() -> dict[str, object]:
                 "torch": False,
                 "tensorflow": False,
                 "yaml": True,
+                "ipython": False,
             },
             "messages": [
                 "Chromium not installed. Run: playwright install chromium",
@@ -114,9 +124,9 @@ def environment_summary() -> dict[str, object]:
 
     ``status`` is:
 
-    - ``"ok"``      all required assets present and onnx importable
-    - ``"partial"`` optional deps (playwright/torch/tf) missing, but core works
-    - ``"error"``   required assets missing or onnx not importable
+    - ``"ok"``      all required assets present and ONNX importable
+    - ``"partial"`` optional deps (playwright/torch/tf/ipython) missing; core works
+    - ``"error"``   required assets missing or ONNX not importable
     """
     assets = check_assets()
     playwright_ok = check_playwright()
@@ -126,56 +136,87 @@ def environment_summary() -> dict[str, object]:
     tf_ok = check_tensorflow()
     yaml_ok = check_yaml()
 
-    messages: list[str] = []
+    try:
+        import ipython  # type: ignore[import]  # noqa: F401
+        ipython_ok = True
+    except ImportError:
+        ipython_ok = False
 
-    # Asset checks (required)
+    messages: list[str] = []
+    all_assets_ok = all(assets.values())
+
+    # Asset checks (required for any rendering)
     for name, present in assets.items():
         if not present:
             messages.append(
                 f"Required asset '{name}' is missing. "
-                "Reinstall the package: pip install --force-reinstall neuroschemax"
+                "Reinstall: pip install --force-reinstall neuroschemax"
             )
 
-    # onnx (required for ONNX model input)
+    # ONNX (required for .onnx file input)
     if not onnx_ok:
         messages.append(
-            "onnx not installed. ONNX model support requires: pip install onnx"
+            "onnx not installed. ONNX input requires: pip install onnx  "
+            "(or: pip install neuroschemax[onnx])"
         )
 
-    # yaml (required for YAML spec input, but ships with PyYAML which is a dep)
+    # YAML
     if not yaml_ok:
         messages.append(
-            "PyYAML not installed. YAML spec support requires: pip install PyYAML"
+            "PyYAML not installed. YAML spec input requires: pip install PyYAML"
         )
 
-    # Playwright (optional, required only for SVG export)
+    # SVG export path
     if not playwright_ok:
         messages.append(
-            "playwright not installed. SVG export requires: pip install playwright"
+            "playwright not installed. SVG export requires: "
+            "pip install playwright && playwright install chromium  "
+            "(or: pip install neuroschemax[svg])"
         )
     elif not chromium_ok:
         messages.append(
-            "Chromium not installed. Run: playwright install chromium"
+            "Chromium not found. SVG export requires: playwright install chromium"
         )
 
-    # torch (optional)
+    # PyTorch
     if not torch_ok:
         messages.append(
-            "torch not installed. PyTorch model support requires: pip install torch"
+            "torch not installed. PyTorch model input requires: "
+            "pip install torch  (or: pip install neuroschemax[torch])"
         )
 
-    # tensorflow (optional)
+    # TensorFlow
     if not tf_ok:
         messages.append(
-            "tensorflow not installed. "
-            "TensorFlow/Keras model support requires: pip install tensorflow"
+            "tensorflow not installed. TF/Keras input requires: "
+            "pip install tensorflow  (or: pip install neuroschemax[tf])"
         )
 
-    # Determine top-level status
-    all_assets_ok = all(assets.values())
+    # Notebook / Colab inline display
+    if not ipython_ok:
+        messages.append(
+            "IPython not installed. Inline notebook/Colab display requires: "
+            "pip install ipython  (or: pip install neuroschemax[colab])"
+        )
+
+    # Capabilities summary (easier to check than raw deps)
+    html_ok = all_assets_ok
+    svg_ok = playwright_ok and chromium_ok
+
+    capabilities = {
+        "html_export": html_ok,
+        "svg_export": svg_ok,
+        "onnx_input": onnx_ok,
+        "torch_input": torch_ok,
+        "tensorflow_input": tf_ok,
+        "yaml_input": yaml_ok,
+        "notebook_display": ipython_ok,
+    }
+
+    # Status
     if not all_assets_ok or not onnx_ok:
         status = "error"
-    elif not playwright_ok or not chromium_ok or not torch_ok or not tf_ok:
+    elif not svg_ok or not torch_ok or not tf_ok or not ipython_ok:
         status = "partial"
     else:
         status = "ok"
@@ -185,6 +226,7 @@ def environment_summary() -> dict[str, object]:
         "version": _get_package_version(),
         "python": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
         "assets": assets,
+        "capabilities": capabilities,
         "dependencies": {
             "onnx": onnx_ok,
             "playwright": playwright_ok,
@@ -192,6 +234,7 @@ def environment_summary() -> dict[str, object]:
             "torch": torch_ok,
             "tensorflow": tf_ok,
             "yaml": yaml_ok,
+            "ipython": ipython_ok,
         },
         "messages": messages,
     }

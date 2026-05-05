@@ -427,3 +427,97 @@ def test_invalid_dpi_raises():
 
     with pytest.raises(ValueError, match="dpi"):
         nsx.build_nnsvg_spec(_mlp_spec(), figsize=(10, 5), dpi=-50)
+
+
+# ---------------------------------------------------------------------------
+# Figure.to_html / _repr_html_ (notebook / Colab API)
+# ---------------------------------------------------------------------------
+
+def test_figure_to_html_returns_string():
+    """Figure.to_html() returns a non-empty HTML string."""
+    fig = nsx.Figure()
+    fig.draw(_mlp_spec())
+    html = fig.to_html()
+    assert isinstance(html, str)
+    assert len(html) > 100
+    assert "<!DOCTYPE html>" in html
+
+
+def test_figure_to_html_is_self_contained():
+    """to_html() HTML is offline-capable (no external URLs required)."""
+    fig = nsx.Figure()
+    fig.draw(_mlp_spec())
+    html = fig.to_html()
+    # Self-contained: no src="http..." or href="http..." for critical assets
+    import re
+    external_srcs = re.findall(r'src="https?://', html)
+    assert not external_srcs, f"External src links found: {external_srcs}"
+
+
+def test_repr_html_returns_string():
+    """_repr_html_() is called by Jupyter rich display."""
+    fig = nsx.Figure()
+    fig.draw(_mlp_spec())
+    html = fig._repr_html_()
+    assert isinstance(html, str)
+    assert "<!DOCTYPE html>" in html
+
+
+def test_repr_html_before_draw_returns_placeholder():
+    """_repr_html_() before draw() returns a safe placeholder, not an error."""
+    fig = nsx.Figure()
+    html = fig._repr_html_()
+    assert isinstance(html, str)
+    assert len(html) > 0
+    # Should mention draw()
+    assert "draw" in html.lower() or "loaded" in html.lower()
+
+
+def test_figure_to_html_matches_save_html(tmp_path: Path):
+    """to_html() and save_html() produce the same content."""
+    fig = nsx.Figure()
+    fig.draw(_mlp_spec())
+    html_str = fig.to_html()
+    path = tmp_path / "mlp.html"
+    fig.save_html(path)
+    html_file = path.read_text()
+    assert html_str == html_file
+
+
+# ---------------------------------------------------------------------------
+# doctor() capabilities key
+# ---------------------------------------------------------------------------
+
+def test_doctor_has_capabilities_key():
+    result = nsx.doctor()
+    assert "capabilities" in result, "doctor() must include 'capabilities' dict"
+
+
+def test_doctor_capabilities_has_html_export():
+    result = nsx.doctor()
+    caps = result["capabilities"]
+    assert "html_export" in caps
+    # HTML export should be True when assets are present (they always are in dev)
+    assert caps["html_export"] is True
+
+
+def test_doctor_capabilities_has_svg_export():
+    result = nsx.doctor()
+    caps = result["capabilities"]
+    assert "svg_export" in caps
+    assert isinstance(caps["svg_export"], bool)
+
+
+def test_doctor_dependencies_has_ipython_key():
+    result = nsx.doctor()
+    deps = result["dependencies"]
+    assert "ipython" in deps, "doctor() dependencies must include 'ipython'"
+
+
+# ---------------------------------------------------------------------------
+# Version
+# ---------------------------------------------------------------------------
+
+def test_version_is_0_1_1():
+    from neuroschemax.version import __version__
+    assert __version__ == "0.1.1"

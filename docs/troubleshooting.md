@@ -36,8 +36,47 @@ pip install --force-reinstall neuroschemax
 ## ONNX file does not parse
 
 - Confirm the file is a valid `.onnx` file (not corrupted).
-- Confirm `onnx` is installed: `pip install onnx`.
+- Confirm `onnx` is installed: `pip install onnx` (or `pip install neuroschemax[onnx]`).
+- Re-export with a lower opset: `torch.onnx.export(..., opset_version=17)`.
 - Some very new ONNX opsets may not be recognised; use a manual spec dict instead.
+
+## PyTorch → ONNX export fails with `ModuleNotFoundError: No module named 'onnxscript'`
+
+`torch >= 2.x` requires `onnxscript` for the new ONNX exporter path.
+
+```bash
+pip install onnxscript
+```
+
+Then retry.  If `onnxscript` is not available, fall back to the legacy exporter:
+
+```python
+torch.onnx.export(model, dummy, "model.onnx", opset_version=16)
+```
+
+## Diagram shapes show `?`
+
+Shape propagation is best-effort.  Common causes:
+
+- **Dynamic batch axes** — use a concrete batch size at export time.
+- **ONNX models without shape info** — run `onnx.shape_inference.infer_shapes`
+  before passing to NeuroSchemaX (the adapter does this automatically).
+- **BatchNorm/Dropout removed by ONNX exporter in eval mode** — these layers
+  are folded out during export and will not appear in the diagram.  This is
+  expected; the diagram reflects the exported computation graph.
+
+## Inline Colab display is broken or shows raw JS
+
+Colab restricts inline HTML/JS rendering.  The recommended approach:
+
+```python
+fig.save_html("diagram.html")
+# Download via Files panel → right-click → Download
+# Open in Chrome or Firefox for full interactivity.
+```
+
+Install `neuroschemax[colab]` for `IPython` support (`pip install "neuroschemax[colab]"`).
+The IFrame preview in Colab is limited; the downloaded HTML file always works.
 
 ---
 
