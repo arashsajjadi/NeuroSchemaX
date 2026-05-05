@@ -112,8 +112,8 @@ _WORD_OVERRIDES: dict[str, str] = {
 }
 _FAMILY_DISPLAY: dict[RenderFamily, str] = {
     RenderFamily.FCNN:    "FCNN",
-    RenderFamily.LENET:   "LeNet-style",
-    RenderFamily.ALEXNET: "AlexNet-style",
+    RenderFamily.LENET:   "LeNet-style CNN",
+    RenderFamily.ALEXNET: "Sequential CNN",
 }
 
 
@@ -131,7 +131,7 @@ def _arch_family_name(family: RenderFamily, arch: SemanticArchitecture) -> str:
     For any CNN-routed architecture (LeNet or AlexNet), distinguish between:
       - U-Net-like (Concat / encoder-decoder)   → "U-Net summary"
       - ResNet-like (Add / residual)             → "ResNet summary"
-      - True sequential (no merge ops)           → "LeNet-style" / "AlexNet-style"
+      - True sequential (no merge ops)           → "LeNet-style CNN" / "Sequential CNN"
     """
     if family in (RenderFamily.LENET, RenderFamily.ALEXNET):
         has_concat = any(lay.kind == LayerKind.CONCAT for lay in arch.layers)
@@ -321,13 +321,18 @@ def _make_label(layer: SemanticLayer, label_mode: str) -> str:
 def _effective_label_mode(cfg: RenderConfig, arch_layer_count: int) -> str:
     """Resolve 'auto' label mode to a concrete mode based on model size.
 
-    Threshold is conservative: compact labels (name + shape) are only used for
-    small models where the canvas gives enough horizontal space per layer.
-    For 10+ arch layers we switch to name-only labels to avoid overlap.
+    The threshold is based on the arch layer count as a proxy for model
+    complexity.  Compact labels (op type + key params: ``Conv 64 k3``,
+    ``Dense 128``) are used for models where each visual stage has enough
+    horizontal width.  For larger models the name-only mode avoids overlap.
+
+    Summary/grouping reduces the visual stage count substantially, but we
+    resolve label mode before grouping, so we use 12 as the cut-off to keep
+    compact labels available for medium CNNs like a typical LeNet/TinyCNN.
     """
     if cfg.label_mode != "auto":
         return cfg.label_mode
-    return "compact" if arch_layer_count <= 9 else "name"
+    return "compact" if arch_layer_count <= 12 else "name"
 
 
 _AVG_CHAR_PX = 0.62   # fraction of font_size per character (conservative estimate)
@@ -472,21 +477,27 @@ def _color_for(kind: LayerKind) -> str:
 # ── Detail-level summary grouping ────────────────────────────────────────────
 
 def _summarize_sequential(spec_layers: list[NNSVGLayerSpec]) -> list[NNSVGLayerSpec]:
-    """Group consecutive conv/pool layers into informative 'Block N' ch=1 boxes.
+    """Group consecutive conv/pool stages into NN-SVG-native block summaries.
 
-    Uses ch=1 (single-rectangle) blocks so LeNet.js can render multi-line
-    labels inside the box.  Each block label includes:
-    - block index
-    - conv count with kernel size: ``4×Conv k3``
-    - output channel count: ``, 64ch``
-    - pool/downsampling marker: ``Pool ↓2``
+    Each block is a proper multi-channel conv stack primitive (not a ch=1 box),
+    labeled with its content: ``Block 1 / 4×Conv k3 / 64ch``.
+    A separate pool primitive is inserted after each block that is followed by
+    pooling, so the diagram retains the NN-SVG LeNet/AlexNet visual language.
 
-    Example:   ``Block 2\\n4×Conv k3, 128ch\\nPool ↓2``
+    Visual feature-map sizes progressively halve after each pool so the diagram
+    clearly communicates spatial downsampling: Block 1 (large) → Pool → Block 2
+    (medium) → Pool → Block 3 (small) → Pool → Classifier (dense column).
     """
     result: list[NNSVGLayerSpec] = []
     i = 0
     n = len(spec_layers)
     block_num = 0
+
+    # Start with a generous visual feature-map size that halves after each pool.
+    input_spec = next((s for s in spec_layers if s.layer_type == "input"), None)
+    in_fm = input_spec.feature_map_height if input_spec else 56
+    # Compress the input to a visual range that leaves room to shrink further.
+    vm_fm = _clamp_fm(in_fm // 4, 24, 56)  # virtual feature-map size tracker
 
     while i < n:
         cur = spec_layers[i]
@@ -496,7 +507,7 @@ def _summarize_sequential(spec_layers: list[NNSVGLayerSpec]) -> list[NNSVGLayerS
             i += 1
 
         elif cur.layer_type == "conv":
-            # Absorb consecutive convs then include one pool if present.
+            # Absorb consecutive convs then look for a trailing pool.
             j = i + 1
             while j < n and spec_layers[j].layer_type == "conv":
                 j += 1
@@ -507,53 +518,66 @@ def _summarize_sequential(spec_layers: list[NNSVGLayerSpec]) -> list[NNSVGLayerS
 
             block_num += 1
             group = spec_layers[i: j - (1 if has_pool else 0)]
-            conv_layers = [s for s in group if s.layer_type == "conv"]
-            last_conv = conv_layers[-1] if conv_layers else group[-1]
-            n_conv = len(conv_layers)
+            conv_group = [s for s in group if s.layer_type == "conv"]
+            last_conv = conv_group[-1] if conv_group else group[-1]
+            n_conv = len(conv_group)
 
-            # Kernel info: if all convs share the same kernel, show it once.
-            kernels = {s.kernel_size for s in conv_layers if s.kernel_size}
+            kernels = {s.kernel_size for s in conv_group if s.kernel_size}
             kern_str = f" k{kernels.pop()}" if len(kernels) == 1 else ""
+            ch = last_conv.channels or 1
 
-            ch_str = f", {last_conv.channels}ch" if last_conv.channels else ""
-            line2 = f"{n_conv}×Conv{kern_str}{ch_str}"
+            # Use the virtual feature-map size for clear visual progression.
+            fm = _clamp_fm(vm_fm, 10, 56)
 
-            label = f"Block {block_num}\n{line2}"
-            if has_pool and pool_spec is not None:
-                pool_k = pool_spec.kernel_size
-                pool_s = pool_spec.stride
-                pool_str = f"Pool ↓{pool_s}" if pool_s and pool_s > 1 else (
-                    f"Pool k{pool_k}" if pool_k else "Pool ↓"
-                )
-                label += f"\n{pool_str}"
-
+            label = f"Block {block_num}\n{n_conv}×Conv{kern_str}\n{ch}ch"
             result.append(NNSVGLayerSpec(
                 layer_type="conv",
                 label=label,
-                channels=1,          # ch=1 = box rendering with multi-line inside label
-                feature_map_width=88,
-                feature_map_height=80,
+                channels=min(ch, 8),   # real multi-channel conv stack
+                kernel_size=next(iter(kernels), 3) if kernels else 3,
+                feature_map_width=fm,
+                feature_map_height=fm,
                 color=last_conv.color,
             ))
+
+            # Separate pool primitive — keeps the NN-SVG visual flow readable.
+            if has_pool and pool_spec is not None:
+                pool_s = pool_spec.stride or 2
+                # Halve the virtual fm so the next block's conv stack is visually smaller.
+                vm_fm = _clamp_fm(vm_fm // pool_s, 8, vm_fm - 4)
+                pool_fm = _clamp_fm(vm_fm, 8, fm - 2)
+                result.append(NNSVGLayerSpec(
+                    layer_type="pool",
+                    label=f"Pool ↓{pool_s}",
+                    channels=min(ch, 8),
+                    kernel_size=pool_spec.kernel_size or 2,
+                    stride=pool_s,
+                    feature_map_width=pool_fm,
+                    feature_map_height=pool_fm,
+                    color=pool_spec.color or _COLORS["pool"],
+                ))
             i = j
 
         elif cur.layer_type == "pool":
             i += 1
 
         elif cur.layer_type == "dense":
-            # All remaining dense layers → Classifier box.  Use the original
-            # semantic unit count (preserved on .extra) rather than the
-            # capped visual-node count when known.
-            true_u = cur.extra.get("true_units") if cur.extra else None
-            units = true_u or cur.units
-            units_str = f"\n{units} classes" if units and units > 1 else ""
+            # Find the LAST dense layer — that is the actual classifier output.
+            # Use its semantic unit count so the label shows true class count
+            # even though visual nodes are capped for readability.
+            last_dense = next(
+                (spec_layers[k] for k in range(len(spec_layers) - 1, i - 1, -1)
+                 if spec_layers[k].layer_type == "dense"),
+                cur,
+            )
+            true_u = last_dense.extra.get("true_units") if last_dense.extra else None
+            units = true_u or last_dense.units or cur.units or 10
             result.append(NNSVGLayerSpec(
-                layer_type="conv",
-                label=f"Classifier{units_str}",
-                channels=1,
-                feature_map_width=96,
-                feature_map_height=72,
+                layer_type="dense",
+                label=f"Classifier {units}",
+                units=min(units, 8),
                 color=_COLORS["output"],
+                extra={"true_units": units},
             ))
             break
 
@@ -564,94 +588,235 @@ def _summarize_sequential(spec_layers: list[NNSVGLayerSpec]) -> list[NNSVGLayerS
     return result
 
 
+def _clamp_fm(val: int, lo: int = 8, hi: int = 60) -> int:
+    return max(lo, min(hi, val))
+
+
 def _summarize_residual(
     spec_layers: list[NNSVGLayerSpec],
     arch: SemanticArchitecture,
 ) -> list[NNSVGLayerSpec]:
-    """Block summary for ResNet/U-Net architectures with merge ops.
+    """NN-SVG-primitive summary for ResNet/U-Net architectures.
 
-    Produces ch=1 box blocks with informative labels that explicitly note
-    when skip connections or concat links have been collapsed.
+    Uses real conv/pool/dense NN-SVG primitives — not generic ch=1 boxes.
+    Skip/concat arcs are collapsed and labelled explicitly.
 
-    ResNet: Input → Stem → Residual Block 1 → ... → Residual Block N → Head
-    U-Net:  Input → Encoder → Bottleneck → Decoder → Segmentation Head
+    ResNet: Input → Stem conv → Residual Block(s) conv → Pool → Classifier
+    U-Net:  Input → Encoder conv+pool → Bottleneck conv → Decoder conv → Seg head
     """
     has_concat = any(lay.kind == LayerKind.CONCAT for lay in arch.layers)
-    has_upsample = any(lay.kind == LayerKind.UPSAMPLE for lay in arch.layers)
-    conv_count = sum(1 for lay in arch.layers if lay.kind in _CONV_KINDS)
-    last_conv_ch = next(
-        (lay.channels for lay in reversed(arch.layers)
-         if lay.kind in _CONV_KINDS and lay.channels),
-        None,
-    )
+    if has_concat:
+        return _summarize_unet_primitives(spec_layers, arch)
+    return _summarize_resnet_primitives(spec_layers, arch)
 
+
+def _summarize_resnet_primitives(
+    spec_layers: list[NNSVGLayerSpec],
+    arch: SemanticArchitecture,
+) -> list[NNSVGLayerSpec]:
+    """Real NN-SVG conv/pool/dense primitives for ResNet-like architectures.
+
+    Residual blocks are shown as multi-channel conv stacks with labels that
+    explicitly note skip arcs are collapsed.  No generic ch=1 boxes.
+    """
     result: list[NNSVGLayerSpec] = []
     if spec_layers and spec_layers[0].layer_type == "input":
         result.append(spec_layers[0])
 
-    if has_concat:
-        # U-Net style encoder-decoder.  Concat/skip links are collapsed;
-        # the label makes this explicit.
-        upsample_str = "Upsample ×2\n" if has_upsample else ""
-        out_label = (
-            f"Segmentation Head\n{last_conv_ch}ch out"
-            if last_conv_ch else "Segmentation Head"
-        )
-        result += [
-            NNSVGLayerSpec(
-                layer_type="conv",
-                label="Encoder\nconv stages\nPool ↓2\nskip→debug JSON",
-                channels=1, feature_map_width=120, feature_map_height=110,
-                color=_COLORS["conv"],
-            ),
-            NNSVGLayerSpec(
-                layer_type="conv",
-                label="Bottleneck\nconv",
-                channels=1, feature_map_width=92, feature_map_height=80,
-                color=_COLORS["pool"],
-            ),
-            NNSVGLayerSpec(
-                layer_type="conv",
-                label=f"Decoder\n{upsample_str}conv stages\nconcat collapsed",
-                channels=1, feature_map_width=120, feature_map_height=110,
-                color=_COLORS["conv"],
-            ),
-            NNSVGLayerSpec(
-                layer_type="conv", label=out_label,
-                channels=1, feature_map_width=96, feature_map_height=72,
-                color=_COLORS["output"],
-            ),
-        ]
-    else:
-        # ResNet style — skip links are collapsed; label notes this explicitly.
-        add_count = sum(1 for lay in arch.layers if lay.kind == LayerKind.ADD)
-        n_blocks = max(1, add_count)
-        # Distribute conv layers across blocks for an honest convs-per-block hint.
-        conv_per_block = max(1, conv_count // max(1, n_blocks + 1))
+    # Gather architecture facts from arch.layers.
+    conv_layers = [lay for lay in arch.layers if lay.kind in _CONV_KINDS]
+    add_layers  = [lay for lay in arch.layers if lay.kind == LayerKind.ADD]
+    n_blocks    = max(1, len(add_layers))
+    conv_per_block = max(1, len(conv_layers) // max(1, n_blocks + 1))
 
+    # Channel progression: use actual channels from arch when available.
+    channels_seq = [lay.channels for lay in conv_layers if lay.channels]
+    def _block_ch(block_idx: int) -> int:
+        pos = min(block_idx * conv_per_block, len(channels_seq) - 1)
+        return channels_seq[pos] if channels_seq else 64
+
+    # Feature map size: stem is large, each residual block steps down.
+    # Use a visible progression so the diagram communicates downsampling.
+    in_shape = spec_layers[0].feature_map_height if spec_layers else 56
+    # Stem is roughly 1/4 the input size (after initial conv+pool in real ResNets).
+    stem_fm = _clamp_fm(in_shape // 4, 20, 56)
+
+    # Stem conv — show conv count and channel info so it's self-describing.
+    stem_ch = channels_seq[0] if channels_seq else 64
+    stem_label = f"Stem\n{conv_per_block}×Conv k3\n{stem_ch}ch"
+    result.append(NNSVGLayerSpec(
+        layer_type="conv",
+        label=stem_label,
+        channels=min(stem_ch, 8),
+        kernel_size=7,
+        feature_map_width=stem_fm,
+        feature_map_height=stem_fm,
+        color=_COLORS["conv"],
+    ))
+
+    # Residual blocks: each block steps down by ~30% so the visual
+    # progression clearly communicates spatial downsampling.
+    for b in range(n_blocks):
+        ch = _block_ch(b)
+        # Each block is ~70% the size of the stem, halving further per block.
+        scale = max(0.35, 0.7 ** (b + 1))
+        fm = _clamp_fm(int(stem_fm * scale), 8, stem_fm - 4)
         result.append(NNSVGLayerSpec(
-            layer_type="conv", label="Stem\nconv",
-            channels=1, feature_map_width=88, feature_map_height=72,
-            color=_COLORS["conv"],
+            layer_type="conv",
+            label=f"Res Block {b + 1}\n{conv_per_block}×Conv k3\n{ch}ch\n+skip collapsed",
+            channels=min(ch, 8),
+            kernel_size=3,
+            feature_map_width=fm,
+            feature_map_height=fm,
+            color=_COLORS["norm"],
         ))
-        for b in range(n_blocks):
-            ch_str = f"\n{last_conv_ch}ch" if last_conv_ch else ""
-            result.append(NNSVGLayerSpec(
-                layer_type="conv",
-                label=(
-                    f"Residual Block {b + 1}\n"
-                    f"{conv_per_block}×Conv k3{ch_str}\n"
-                    "+skip collapsed"
-                ),
-                channels=1, feature_map_width=120, feature_map_height=108,
-                color=_COLORS["norm"],
-            ))
+
+    # Global avg pool → tiny feature map.
+    last_ch = _block_ch(n_blocks - 1)
+    result.append(NNSVGLayerSpec(
+        layer_type="pool",
+        label="Global Avg Pool",
+        channels=min(last_ch, 8),
+        kernel_size=3,
+        feature_map_width=8,
+        feature_map_height=8,
+        color=_COLORS["pool"],
+    ))
+
+    # Classifier: dense column with semantic unit count.
+    dense_specs = [s for s in spec_layers if s.layer_type == "dense"]
+    if dense_specs:
+        cls = dense_specs[-1]
+        true_u = cls.extra.get("true_units") if cls.extra else None
+        units  = true_u or cls.units or 10
         result.append(NNSVGLayerSpec(
-            layer_type="conv", label="Head\nClassifier",
-            channels=1, feature_map_width=88, feature_map_height=68,
+            layer_type="dense",
+            label=f"Classifier {units}",
+            units=min(units, 8),
             color=_COLORS["output"],
+            extra={"true_units": units},
         ))
+    return result
 
+
+def _summarize_unet_primitives(
+    spec_layers: list[NNSVGLayerSpec],
+    arch: SemanticArchitecture,
+) -> list[NNSVGLayerSpec]:
+    """Real NN-SVG conv/pool primitives for U-Net-like encoder-decoder.
+
+    Encoder stages are shown as conv stacks with pool blocks.  Decoder stages
+    are shown as conv stacks with upsample labels.  Concat arcs are collapsed
+    and labelled explicitly.  No generic ch=1 boxes.
+    """
+    result: list[NNSVGLayerSpec] = []
+    if spec_layers and spec_layers[0].layer_type == "input":
+        result.append(spec_layers[0])
+
+    # Gather architecture facts.
+    conv_layers = [lay for lay in arch.layers if lay.kind in _CONV_KINDS]
+    has_upsample = any(lay.kind == LayerKind.UPSAMPLE for lay in arch.layers)
+
+    # Identify channels at key stages using output shapes from arch.
+    enc_convs = [lay for lay in conv_layers if lay.channels is not None]
+
+    # Heuristic split: first half encoder, last quarter decoder, middle bottleneck.
+    n_conv = len(enc_convs)
+    enc_n = max(1, n_conv // 3)
+    bot_n = max(1, n_conv // 6)
+    dec_n = max(1, n_conv - enc_n - bot_n)
+
+    enc_layers  = enc_convs[:enc_n]
+    bot_layers  = enc_convs[enc_n: enc_n + bot_n]
+    dec_layers  = enc_convs[enc_n + bot_n:]
+
+    def _ch(layers_slice: list, fallback: int, first: bool = False) -> int:
+        chs = [lay.channels for lay in layers_slice if lay.channels and lay.channels > 1]
+        if not chs:
+            chs = [lay.channels for lay in layers_slice if lay.channels]
+        return (chs[0] if first else chs[-1]) if chs else fallback
+
+    def _fm(layers_slice: list, fallback: int) -> int:
+        for lay in reversed(layers_slice):
+            if lay.output_shape:
+                ints = [d for d in lay.output_shape if isinstance(d, int) and d > 0]
+                if len(ints) >= 2:
+                    return _clamp_fm(ints[-1], 8, 60)
+        return fallback
+
+    # Size progression that visually communicates compress → expand.
+    # Encoder: large feature maps. Bottleneck: smallest. Decoder: medium (between
+    # bottleneck and encoder). Seg head: thin output map.
+    in_fm  = spec_layers[0].feature_map_height if spec_layers else 64
+    enc_fm = _clamp_fm(in_fm, 20, 56)      # largest visual block
+    bot_fm = _clamp_fm(in_fm // 4, 8, 20)  # smallest (bottleneck)
+    dec_fm = _clamp_fm(in_fm // 2, 14, 40) # intermediate (decoder)
+    pool_fm = _clamp_fm(enc_fm // 2, 8, 36)
+
+    enc_ch = _ch(enc_layers, 64)
+    bot_ch = _ch(bot_layers if bot_layers else enc_layers, 128)
+    dec_ch = _ch(dec_layers, enc_ch, first=True)
+
+    # Encoder: conv stack + pool.
+    result.append(NNSVGLayerSpec(
+        layer_type="conv",
+        label=f"Encoder\n{enc_n}×Conv k3\n{enc_ch}ch",
+        channels=min(enc_ch, 8),
+        kernel_size=3,
+        feature_map_width=enc_fm,
+        feature_map_height=enc_fm,
+        color=_COLORS["conv"],
+    ))
+    result.append(NNSVGLayerSpec(
+        layer_type="pool",
+        label="Pool ↓2\nskip→debug JSON",
+        channels=min(enc_ch, 8),
+        kernel_size=2,
+        stride=2,
+        feature_map_width=pool_fm,
+        feature_map_height=pool_fm,
+        color=_COLORS["pool"],
+    ))
+
+    # Bottleneck: smallest conv stack — clearly the compressed centre.
+    result.append(NNSVGLayerSpec(
+        layer_type="conv",
+        label=f"Bottleneck\n{bot_n}×Conv k3\n{bot_ch}ch",
+        channels=min(bot_ch, 8),
+        kernel_size=3,
+        feature_map_width=bot_fm,
+        feature_map_height=bot_fm,
+        color=_COLORS["pool"],
+    ))
+
+    # Decoder: intermediate size, clearly expanding from bottleneck.
+    up_label = "↑ Upsample ×2" if has_upsample else "↑ Decode"
+    result.append(NNSVGLayerSpec(
+        layer_type="conv",
+        label=f"Decoder\n{up_label}\n{dec_n}×Conv k3\nconcat collapsed",
+        channels=min(dec_ch, 8),
+        kernel_size=3,
+        feature_map_width=dec_fm,
+        feature_map_height=dec_fm,
+        color=_COLORS["conv"],
+    ))
+
+    # Segmentation head: final output conv — use thin feature map (few channels).
+    out_conv = next(
+        (lay for lay in reversed(conv_layers) if lay.channels and lay.channels <= 4),
+        None,
+    )
+    out_ch = out_conv.channels if out_conv else 1
+    # Head at same spatial size as decoder to show full-res output
+    result.append(NNSVGLayerSpec(
+        layer_type="conv",
+        label=f"Seg Head\n{out_ch}ch output",
+        channels=min(max(out_ch, 1), 4),
+        kernel_size=1,
+        feature_map_width=dec_fm,
+        feature_map_height=dec_fm,
+        color=_COLORS["output"],
+    ))
     return result
 
 

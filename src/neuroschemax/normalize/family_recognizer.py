@@ -56,17 +56,17 @@ def recommend_family(
     # ── Priority 1: Transformer / attention ─────────────────────────────────
     if has_attention:
         warnings.append(
-            "Transformer-like architecture (attention detected).  "
-            "Block-level summary shown — Q/K/V, individual attention heads, "
-            "exact residual paths, and tensor flow are NOT drawn.  "
-            "Full layer list preserved in debug JSON."
+            "Transformer-like architecture detected.  "
+            "Q/K/V projections, individual attention heads, exact residual paths, "
+            "and tensor flow are NOT drawn.  "
+            "Use transformer_mode='block_summary' for a conceptual overview.  "
+            "Full layer metadata preserved in debug JSON."
         )
         if conv_count > 0:
             if has_skip:
                 warnings.append(
                     f"Additional skip/merge operations detected "
-                    f"({len(merge_layers)} merge layer(s)).  "
-                    "These are collapsed in the visual diagram."
+                    f"({len(merge_layers)} merge layer(s)) — collapsed in visual output."
                 )
             return RenderFamily.ALEXNET, ConfidenceLevel.LOW, warnings
         return RenderFamily.FCNN, ConfidenceLevel.LOW, warnings
@@ -74,10 +74,9 @@ def recommend_family(
     # ── Priority 2: Recurrent (LSTM / GRU / RNN) ────────────────────────────
     if has_recurrent:
         warnings.append(
-            "Model contains recurrent layers (LSTM/GRU/RNN).  "
-            "NN-SVG has no recurrent family — layers are rendered as a linear "
-            "sequence.  Recurrent connections are not drawn.  "
-            "The full graph is preserved in the debug-JSON export."
+            "Recurrent layers (LSTM/GRU/RNN) detected.  "
+            "Recurrent connections are not drawn — rendered as a linear sequence.  "
+            "Full layer metadata preserved in debug JSON."
         )
         return RenderFamily.FCNN, ConfidenceLevel.LOW, warnings
 
@@ -86,8 +85,8 @@ def recommend_family(
         if has_merge:
             warnings.append(
                 f"Model has {len(merge_layers)} merge operation(s) (Add/Concat/Multiply).  "
-                "FCNN view renders layers sequentially — branches are not shown.  "
-                "The full graph is preserved in the debug-JSON export."
+                "Branches are not drawn — layers rendered sequentially.  "
+                "Full graph preserved in debug JSON."
             )
             return RenderFamily.FCNN, ConfidenceLevel.MEDIUM, warnings
         return RenderFamily.FCNN, ConfidenceLevel.HIGH, warnings
@@ -97,10 +96,9 @@ def recommend_family(
         if has_skip:
             merge_count = len(merge_layers)
             warnings.append(
-                f"Model has {merge_count} skip/merge operation(s).  "
-                "LeNet view renders the sequential backbone only — "
-                "residual paths are not drawn.  "
-                "The full graph is preserved in the debug-JSON export."
+                f"Model has {merge_count} residual/skip operation(s).  "
+                "Skip arcs are not drawn — sequential backbone only.  "
+                "Full graph preserved in debug JSON."
             )
             return RenderFamily.LENET, ConfidenceLevel.MEDIUM, warnings
         return RenderFamily.LENET, ConfidenceLevel.HIGH, warnings
@@ -111,19 +109,15 @@ def recommend_family(
             concat_in_merges = any(lay.kind == LayerKind.CONCAT for lay in merge_layers)
             if concat_in_merges:
                 warnings.append(
-                    f"Model has {len(merge_layers)} merge operation(s) including Concat "
-                    "(U-Net / encoder-decoder style).  "
-                    "AlexNet view renders the encoder backbone sequentially — "
-                    "decoder branches and skip links are collapsed.  "
-                    "The full graph is preserved in the debug-JSON export."
+                    f"U-Net/encoder-decoder style ({len(merge_layers)} Concat operation(s)).  "
+                    "Concat skip paths are not drawn — encoder-decoder summary rendered.  "
+                    "Full graph preserved in debug JSON."
                 )
             else:
                 warnings.append(
-                    f"Model has {len(merge_layers)} residual/skip connection(s) "
-                    "(Add operations — ResNet style).  "
-                    "AlexNet view renders the sequential backbone — "
-                    "skip links are collapsed.  "
-                    "The full graph is preserved in the debug-JSON export."
+                    f"ResNet-like architecture ({len(merge_layers)} residual Add operation(s)).  "
+                    "Residual skip arcs are not drawn — residual block summary rendered.  "
+                    "Full graph preserved in debug JSON."
                 )
             return RenderFamily.ALEXNET, ConfidenceLevel.MEDIUM, warnings
         return RenderFamily.ALEXNET, ConfidenceLevel.HIGH, warnings

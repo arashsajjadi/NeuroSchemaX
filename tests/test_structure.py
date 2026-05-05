@@ -939,8 +939,9 @@ def test_large_cnn_summary_blocks_have_conv_info():
         ),
     }
     spec = nsx.build_nnsvg_spec(large_spec, detail_level="summary")
-    block_labels = [s.label for s in spec.layers if s.layer_type == "conv" and s.channels == 1]
-    assert len(block_labels) > 0, "Summary should produce ch=1 block labels"
+    # Summary now uses multi-channel conv primitives (not ch=1 boxes).
+    block_labels = [s.label for s in spec.layers if s.layer_type == "conv" and s.layer_type != "input"]
+    assert len(block_labels) > 0, "Summary should produce block conv labels"
     # At least one block should mention conv count or channel info
     combined = "\n".join(block_labels)
     has_info = any(
@@ -1413,9 +1414,9 @@ def test_resnet_summary_block_label_has_conv_count():
             {"name": "fc",   "kind": "dense", "units": 10},
         ],
     }, detail_level="summary")
-    res_labels = [s.label for s in spec.layers if "Residual Block" in s.label]
+    res_labels = [s.label for s in spec.layers if "Res Block" in s.label or "Residual Block" in s.label]
     assert res_labels, f"No residual block labels: {[s.label for s in spec.layers]}"
-    # Each residual block label must mention either Conv count or channel count.
+    # Each residual block label must mention Conv count or channel count.
     for lb in res_labels:
         assert "Conv" in lb or "ch" in lb, (
             f"Residual block label must mention conv/channel info: {lb!r}"
@@ -1978,11 +1979,15 @@ def test_unet_manual_subtitle_not_alexnet_style():
     )
 
 
-def test_vgg_sequential_subtitle_is_alexnet_style():
-    """Sequential VGG-like CNN must still be labeled 'AlexNet-style'."""
+def test_vgg_sequential_subtitle_is_sequential_cnn():
+    """Sequential VGG-like CNN must be labeled as a sequential CNN (not ResNet/U-Net)."""
     spec = nsx.build_nnsvg_spec(_vgg_sequential_spec())
-    assert "AlexNet" in spec.subtitle, (
-        f"Sequential VGG-like CNN should be AlexNet-style, got: {spec.subtitle!r}"
+    # Should say "Sequential CNN" or "LeNet-style CNN" — not ResNet/U-Net summary
+    assert "ResNet" not in spec.subtitle and "U-Net" not in spec.subtitle, (
+        f"Sequential VGG must not be labeled ResNet/U-Net: {spec.subtitle!r}"
+    )
+    assert "CNN" in spec.subtitle or "AlexNet" in spec.subtitle or "Sequential" in spec.subtitle, (
+        f"Sequential VGG must be identified as CNN family: {spec.subtitle!r}"
     )
 
 
@@ -2147,11 +2152,15 @@ def test_onnx_unet_produces_encoder_decoder_labels():
     )
 
 
-def test_vgg_sequential_onnx_subtitle_is_alexnet_style():
-    """ONNX sequential CNN without merge ops must still be AlexNet-style."""
+def test_vgg_sequential_onnx_subtitle_is_sequential_cnn():
+    """ONNX sequential CNN without merge ops must be identified as Sequential CNN family."""
     spec = nsx.build_nnsvg_spec(_vgg_sequential_spec())
-    assert "AlexNet" in spec.subtitle, (
-        f"Sequential VGG CNN should stay AlexNet-style: {spec.subtitle!r}"
+    # Should identify as some form of sequential CNN
+    assert "ResNet" not in spec.subtitle and "U-Net" not in spec.subtitle, (
+        f"Sequential VGG must not be labeled ResNet/U-Net: {spec.subtitle!r}"
+    )
+    assert "CNN" in spec.subtitle or "AlexNet" in spec.subtitle or "Sequential" in spec.subtitle, (
+        f"Sequential VGG must be identified as CNN family: {spec.subtitle!r}"
     )
 
 
@@ -2178,3 +2187,378 @@ def test_to_notebook_html_has_adequate_height():
     assert iframe_height >= 700, (
         f"iframe height must be >= 700 for diagrams to be readable; got {iframe_height}"
     )
+
+
+# ── NN-SVG primitive regression tests ───────────────────────────────────────
+
+def test_vgg_full_uses_nnsvg_primitives_not_boxes():
+    """VGG full mode must use multi-channel conv/pool/dense primitives, not ch=1 boxes."""
+    vgg = {
+        "model_name": "vgg",
+        "layers": (
+            [{"name": "input", "kind": "input", "shape": [1, 3, 224, 224]}]
+            + [{"name": f"c{i}", "kind": "conv", "out_channels": 64, "kernel_size": [3, 3]}
+               for i in range(4)]
+            + [{"name": "pool", "kind": "maxpool", "kernel_size": [2, 2], "stride": [2, 2]}]
+            + [{"name": f"c{i+4}", "kind": "conv", "out_channels": 128, "kernel_size": [3, 3]}
+               for i in range(4)]
+            + [{"name": "fc", "kind": "dense", "units": 1000}]
+        ),
+    }
+    spec = nsx.build_nnsvg_spec(vgg, detail_level="full")
+    non_input = [s for s in spec.layers if s.layer_type != "input"]
+    # All non-input conv layers must be multi-channel (real NN-SVG stacks)
+    conv_layers = [s for s in non_input if s.layer_type in ("conv", "pool")]
+    ch1_boxes = [s for s in conv_layers if s.channels == 1]
+    assert not ch1_boxes, (
+        f"VGG full must not use ch=1 generic boxes; found: {[(s.layer_type, s.label) for s in ch1_boxes]}"
+    )
+
+
+def test_vgg_summary_uses_nnsvg_primitives():
+    """VGG summary mode must retain conv/pool/dense NN-SVG primitives."""
+    vgg = {
+        "model_name": "vgg",
+        "layers": (
+            [{"name": "input", "kind": "input", "shape": [1, 3, 224, 224]}]
+            + [{"name": f"c{i}", "kind": "conv", "out_channels": 64, "kernel_size": [3, 3]}
+               for i in range(4)]
+            + [{"name": "pool", "kind": "maxpool", "kernel_size": [2, 2], "stride": [2, 2]}]
+            + [{"name": f"c{i+4}", "kind": "conv", "out_channels": 128, "kernel_size": [3, 3]}
+               for i in range(4)]
+            + [{"name": "fc", "kind": "dense", "units": 1000}]
+        ),
+    }
+    spec = nsx.build_nnsvg_spec(vgg, detail_level="summary")
+    types = {s.layer_type for s in spec.layers}
+    # Summary must still include proper dense/classifier column (not only conv boxes)
+    assert "dense" in types or any(s.channels > 1 for s in spec.layers if s.layer_type == "conv"), (
+        "VGG summary must retain NN-SVG-style conv/dense primitives"
+    )
+
+
+def test_resnet_summary_no_ch1_generic_boxes():
+    """ResNet summary must not produce ch=1 generic square boxes for backbone."""
+    spec = nsx.build_nnsvg_spec({
+        "model_name": "resnet",
+        "layers": [
+            {"name": "input", "kind": "input", "shape": [1, 3, 224, 224]},
+            *[{"name": f"c{i}", "kind": "conv", "out_channels": 64, "kernel_size": [3, 3]}
+              for i in range(4)],
+            {"name": "add1", "kind": "add"},
+            {"name": "fc", "kind": "dense", "units": 10},
+        ],
+    })
+    conv_layers = [s for s in spec.layers if s.layer_type in ("conv", "pool") and s.layer_type != "input"]
+    ch1_boxes = [s for s in conv_layers if s.channels == 1]
+    assert not ch1_boxes, (
+        f"ResNet summary must use multi-channel conv primitives, not ch=1 boxes; "
+        f"got: {[(s.layer_type, s.channels, s.label[:20]) for s in ch1_boxes]}"
+    )
+
+
+def test_resnet_summary_has_dense_classifier():
+    """ResNet summary must end with a dense/classifier NN-SVG column."""
+    spec = nsx.build_nnsvg_spec({
+        "model_name": "resnet",
+        "layers": [
+            {"name": "input", "kind": "input", "shape": [1, 3, 224, 224]},
+            *[{"name": f"c{i}", "kind": "conv", "out_channels": 64, "kernel_size": [3, 3]}
+              for i in range(4)],
+            {"name": "add1", "kind": "add"},
+            {"name": "fc", "kind": "dense", "units": 10},
+        ],
+    })
+    dense_layers = [s for s in spec.layers if s.layer_type == "dense"]
+    assert dense_layers, "ResNet summary must have a dense classifier column"
+    assert "Classifier" in dense_layers[-1].label or "10" in dense_layers[-1].label
+
+
+def test_unet_summary_no_ch1_generic_boxes():
+    """U-Net summary must not produce ch=1 generic square boxes for encoder/decoder."""
+    spec = nsx.build_nnsvg_spec({
+        "model_name": "unet",
+        "layers": [
+            {"name": "input", "kind": "input", "shape": [1, 1, 64, 64]},
+            {"name": "e1", "kind": "conv", "out_channels": 64, "kernel_size": [3, 3]},
+            {"name": "e2", "kind": "conv", "out_channels": 128, "kernel_size": [3, 3]},
+            {"name": "bot", "kind": "conv", "out_channels": 256, "kernel_size": [3, 3]},
+            {"name": "up", "kind": "upsample", "scale_factor": 2},
+            {"name": "d1", "kind": "conv", "out_channels": 128, "kernel_size": [3, 3]},
+            {"name": "cat", "kind": "concat"},
+            {"name": "out", "kind": "conv", "out_channels": 1, "kernel_size": [1, 1]},
+        ],
+    })
+    conv_pool = [s for s in spec.layers if s.layer_type in ("conv", "pool") and s.layer_type != "input"]
+    ch1_boxes = [s for s in conv_pool if s.channels == 1 and s.layer_type == "conv" and s.feature_map_width > 4]
+    # We allow ch=1 for the actual segmentation head output (1ch output conv)
+    # but NOT for encoder/decoder stages
+    enc_dec_ch1 = [s for s in ch1_boxes
+                   if "Encoder" in s.label or "Decoder" in s.label or "Bottleneck" in s.label]
+    assert not enc_dec_ch1, (
+        f"U-Net Encoder/Decoder stages must use multi-channel conv primitives, not ch=1 boxes: "
+        f"{[(s.channels, s.label[:30]) for s in enc_dec_ch1]}"
+    )
+
+
+def test_unet_summary_has_pool_primitive():
+    """U-Net summary must include a pool primitive for the encoder downsampling."""
+    spec = nsx.build_nnsvg_spec({
+        "model_name": "unet",
+        "layers": [
+            {"name": "input", "kind": "input", "shape": [1, 1, 64, 64]},
+            {"name": "e1", "kind": "conv", "out_channels": 64, "kernel_size": [3, 3]},
+            {"name": "e2", "kind": "conv", "out_channels": 128, "kernel_size": [3, 3]},
+            {"name": "bot", "kind": "conv", "out_channels": 256, "kernel_size": [3, 3]},
+            {"name": "up", "kind": "upsample", "scale_factor": 2},
+            {"name": "d1", "kind": "conv", "out_channels": 128, "kernel_size": [3, 3]},
+            {"name": "cat", "kind": "concat"},
+            {"name": "out", "kind": "conv", "out_channels": 1, "kernel_size": [1, 1]},
+        ],
+    })
+    pool_layers = [s for s in spec.layers if s.layer_type == "pool"]
+    assert pool_layers, "U-Net summary must include pool primitive for encoder downsampling"
+
+
+def test_resnet_warnings_no_alexnet_view_text():
+    """ResNet warnings must not say 'AlexNet view'."""
+    arch = nsx.parse_model({
+        "model_name": "resnet",
+        "layers": [
+            {"name": "input", "kind": "input", "shape": [1, 3, 224, 224]},
+            *[{"name": f"c{i}", "kind": "conv", "out_channels": 64, "kernel_size": [3, 3]}
+              for i in range(5)],
+            {"name": "add1", "kind": "add"},
+            {"name": "fc", "kind": "dense", "units": 10},
+        ],
+    })
+    combined = " ".join(arch.warnings).lower()
+    assert "alexnet view" not in combined, (
+        f"ResNet warning must not mention 'AlexNet view': {arch.warnings}"
+    )
+
+
+def test_unet_warnings_no_alexnet_view_text():
+    """U-Net warnings must not say 'AlexNet view'."""
+    arch = nsx.parse_model({
+        "model_name": "unet",
+        "layers": [
+            {"name": "input", "kind": "input", "shape": [1, 1, 64, 64]},
+            {"name": "e1", "kind": "conv", "out_channels": 64, "kernel_size": [3, 3]},
+            {"name": "bot", "kind": "conv", "out_channels": 128, "kernel_size": [3, 3]},
+            {"name": "cat", "kind": "concat"},
+            {"name": "out", "kind": "conv", "out_channels": 1, "kernel_size": [1, 1]},
+        ],
+    })
+    combined = " ".join(arch.warnings).lower()
+    assert "alexnet view" not in combined, (
+        f"U-Net warning must not mention 'AlexNet view': {arch.warnings}"
+    )
+
+
+def test_transformer_unsupported_warning_no_block_summary_shown():
+    """Transformer unsupported mode warning must not claim block-level summary is shown."""
+    arch = nsx.parse_model({
+        "model_name": "trans",
+        "layers": [
+            {"name": "embed", "kind": "embedding"},
+            {"name": "attn", "kind": "attention"},
+            {"name": "ff", "kind": "dense", "units": 512},
+        ],
+    })
+    # The family_recognizer warning should not say "block-level summary shown"
+    # when the user is about to use transformer_mode="unsupported"
+    combined = " ".join(arch.warnings)
+    assert "block-level summary shown" not in combined, (
+        f"Transformer warning must not claim block summary is shown; got: {combined[:200]!r}"
+    )
+
+
+def test_readme_contains_colab_viewer_link():
+    """README must contain the public Colab viewer link."""
+    import pathlib
+    readme = (pathlib.Path(__file__).parent.parent / "README.md").read_text()
+    assert "colab.research.google.com" in readme, "README must contain Colab link"
+    assert "1oVe9JRJukQ5dQsFH8XoVQj6b1IDpy2MS" in readme, (
+        "README must contain the specific Colab notebook ID"
+    )
+
+
+# ── Final visual-system policy tests ────────────────────────────────────────
+
+def _vgg_with_two_dense_spec() -> dict:
+    """VGG-like model with two dense layers (fc1=4096, fc2=1000) to test classifier."""
+    layers = [{"name": "input", "kind": "input", "shape": [1, 3, 224, 224]}]
+    for i in range(4):
+        layers.append({"name": f"c{i}", "kind": "conv", "out_channels": 64, "kernel_size": [3, 3]})
+    layers.append({"name": "pool", "kind": "maxpool", "kernel_size": [2, 2], "stride": [2, 2]})
+    layers.append({"name": "fc1", "kind": "dense", "units": 4096})
+    layers.append({"name": "fc2", "kind": "dense", "units": 1000})
+    return {"model_name": "vgg_two_fc", "layers": layers}
+
+
+def test_vgg_summary_classifier_uses_last_dense_not_first():
+    """VGG summary classifier must show the LAST dense unit count (1000), not the first (4096)."""
+    spec = nsx.build_nnsvg_spec(_vgg_with_two_dense_spec(), detail_level="summary")
+    dense_layers = [s for s in spec.layers if s.layer_type == "dense"]
+    assert dense_layers, "VGG summary must produce a dense classifier"
+    last = dense_layers[-1]
+    assert "1000" in last.label, (
+        f"Classifier must show true output class count (1000), not first dense (4096); "
+        f"got: {last.label!r}"
+    )
+    assert "4096" not in last.label, (
+        f"Classifier label must not show intermediate dense size 4096; got: {last.label!r}"
+    )
+
+
+def test_vgg_summary_fmw_decreases_after_each_pool():
+    """VGG summary must show visually decreasing feature-map sizes after each pool."""
+    spec = nsx.build_nnsvg_spec({
+        "model_name": "vgg",
+        "layers": (
+            [{"name": "input", "kind": "input", "shape": [1, 3, 224, 224]}]
+            + [{"name": f"c{i}", "kind": "conv", "out_channels": 64, "kernel_size": [3, 3]}
+               for i in range(2)]
+            + [{"name": "p1", "kind": "maxpool", "kernel_size": [2, 2], "stride": [2, 2]}]
+            + [{"name": f"c{i+2}", "kind": "conv", "out_channels": 128, "kernel_size": [3, 3]}
+               for i in range(2)]
+            + [{"name": "p2", "kind": "maxpool", "kernel_size": [2, 2], "stride": [2, 2]}]
+            + [{"name": "fc", "kind": "dense", "units": 1000}]
+        ),
+    }, detail_level="summary")
+    conv_fmws = [s.feature_map_width for s in spec.layers
+                 if s.layer_type == "conv" and s.layer_type != "input" and s.feature_map_width > 0]
+    assert len(conv_fmws) >= 2, "Need at least 2 conv blocks for progression check"
+    # Each subsequent conv block must be smaller (halved after pool)
+    for k in range(1, len(conv_fmws)):
+        assert conv_fmws[k] <= conv_fmws[k - 1], (
+            f"fmW must not increase between blocks; got {conv_fmws}"
+        )
+
+
+def test_vgg_subtitle_says_sequential_cnn_not_alexnet():
+    """VGG/AlexNet-style diagrams should use 'Sequential CNN', not the internal renderer name."""
+    spec = nsx.build_nnsvg_spec({
+        "model_name": "vgg",
+        "layers": (
+            [{"name": "input", "kind": "input", "shape": [1, 3, 224, 224]}]
+            + [{"name": f"c{i}", "kind": "conv", "out_channels": 64, "kernel_size": [3, 3]}
+               for i in range(5)]
+            + [{"name": "fc", "kind": "dense", "units": 1000}]
+        ),
+    })
+    assert "ResNet" not in spec.subtitle and "U-Net" not in spec.subtitle, (
+        f"Sequential CNN subtitle must not say ResNet/U-Net: {spec.subtitle!r}"
+    )
+    # Must identify as some form of CNN (exact string may change, but should be CNN-related)
+    assert any(kw in spec.subtitle for kw in ("CNN", "AlexNet", "LeNet", "Sequential")), (
+        f"Sequential CNN subtitle must identify the CNN family: {spec.subtitle!r}"
+    )
+
+
+def test_tiny_cnn_compact_labels_show_op_type():
+    """TinyCNN (<=12 arch layers) must use compact labels showing op type, not just names."""
+    spec = nsx.build_nnsvg_spec({
+        "model_name": "tiny_cnn",
+        "layers": [
+            {"name": "input", "kind": "input", "shape": [1, 1, 28, 28]},
+            {"name": "conv1", "kind": "conv", "out_channels": 16, "kernel_size": [3, 3]},
+            {"name": "bn1", "kind": "batchnorm"},
+            {"name": "relu1", "kind": "relu"},
+            {"name": "pool1", "kind": "maxpool", "kernel_size": [2, 2], "stride": [2, 2]},
+            {"name": "conv2", "kind": "conv", "out_channels": 32, "kernel_size": [3, 3]},
+            {"name": "relu2", "kind": "relu"},
+            {"name": "fc1", "kind": "dense", "units": 10},
+        ],
+    })
+    conv_labels = [s.label for s in spec.layers if s.layer_type == "conv" and s.channels > 1]
+    # Compact mode should produce operation-type labels: "Conv 16 k3" style
+    assert any("Conv" in lb for lb in conv_labels), (
+        f"TinyCNN should use compact 'Conv ...' labels, got: {conv_labels}"
+    )
+
+
+def test_resnet_stem_label_has_conv_info():
+    """ResNet stem label must include conv count/channel info, not just 'Stem'."""
+    spec = nsx.build_nnsvg_spec({
+        "model_name": "resnet",
+        "layers": [
+            {"name": "input", "kind": "input", "shape": [1, 3, 224, 224]},
+            *[{"name": f"c{i}", "kind": "conv", "out_channels": 64, "kernel_size": [3, 3]}
+              for i in range(4)],
+            {"name": "add1", "kind": "add"},
+            {"name": "fc", "kind": "dense", "units": 1000},
+        ],
+    })
+    stem_layers = [s for s in spec.layers if "Stem" in (s.label or "")]
+    assert stem_layers, "ResNet must have a Stem block"
+    stem_label = stem_layers[0].label
+    # Must include conv count or channel info
+    assert "Conv" in stem_label or "ch" in stem_label or "×" in stem_label, (
+        f"Stem label must include conv/channel info; got: {stem_label!r}"
+    )
+
+
+def test_resnet_fmw_decreases_from_stem_to_blocks():
+    """ResNet visual progression: stem fmW > residual block fmW."""
+    spec = nsx.build_nnsvg_spec({
+        "model_name": "resnet",
+        "layers": [
+            {"name": "input", "kind": "input", "shape": [1, 3, 224, 224]},
+            *[{"name": f"c{i}", "kind": "conv", "out_channels": 64, "kernel_size": [3, 3]}
+              for i in range(4)],
+            {"name": "add1", "kind": "add"},
+            {"name": "fc", "kind": "dense", "units": 1000},
+        ],
+    })
+    conv_layers = [s for s in spec.layers if s.layer_type == "conv" and s.feature_map_width > 0]
+    if len(conv_layers) >= 2:
+        # Stem (first) should be larger than residual blocks (subsequent)
+        assert conv_layers[0].feature_map_width > conv_layers[1].feature_map_width, (
+            f"Stem fmW ({conv_layers[0].feature_map_width}) must be larger than "
+            f"residual block fmW ({conv_layers[1].feature_map_width})"
+        )
+
+
+def test_unet_fmw_shows_compress_expand():
+    """U-Net fmW must compress (encoder→bottleneck) then expand (bottleneck→decoder)."""
+    spec = nsx.build_nnsvg_spec({
+        "model_name": "unet",
+        "layers": [
+            {"name": "input", "kind": "input", "shape": [1, 1, 64, 64]},
+            {"name": "e1", "kind": "conv", "out_channels": 64, "kernel_size": [3, 3]},
+            {"name": "e2", "kind": "conv", "out_channels": 128, "kernel_size": [3, 3]},
+            {"name": "bot", "kind": "conv", "out_channels": 256, "kernel_size": [3, 3]},
+            {"name": "up", "kind": "upsample", "scale_factor": 2},
+            {"name": "d1", "kind": "conv", "out_channels": 128, "kernel_size": [3, 3]},
+            {"name": "cat", "kind": "concat"},
+            {"name": "out", "kind": "conv", "out_channels": 1, "kernel_size": [1, 1]},
+        ],
+    })
+    enc = next((s for s in spec.layers if "Encoder" in (s.label or "")), None)
+    bot = next((s for s in spec.layers if "Bottleneck" in (s.label or "")), None)
+    dec = next((s for s in spec.layers if "Decoder" in (s.label or "")), None)
+    assert enc and bot and dec, "U-Net must have Encoder, Bottleneck, Decoder stages"
+    # Encoder > Bottleneck (compression)
+    assert enc.feature_map_width > bot.feature_map_width, (
+        f"Encoder fmW ({enc.feature_map_width}) must be larger than "
+        f"Bottleneck fmW ({bot.feature_map_width})"
+    )
+    # Decoder > Bottleneck (expansion)
+    assert dec.feature_map_width > bot.feature_map_width, (
+        f"Decoder fmW ({dec.feature_map_width}) must be larger than "
+        f"Bottleneck fmW ({bot.feature_map_width})"
+    )
+
+
+def test_readme_uses_only_supported_api_options():
+    """README examples must not use genuinely nonexistent API options."""
+    import pathlib
+    readme = (pathlib.Path(__file__).parent.parent / "README.md").read_text()
+    # These style values do not exist in the rendering API
+    bad_options = ["style='vgg'", 'style="vgg"', "style='resnet'", 'style="resnet"']
+    for bad in bad_options:
+        assert bad not in readme, (
+            f"README contains nonexistent style option {bad!r}"
+        )

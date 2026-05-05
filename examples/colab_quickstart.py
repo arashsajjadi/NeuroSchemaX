@@ -7,6 +7,9 @@ Installation (first cell):
 
 Optional — ONNX input for real PyTorch models:
     !pip install "neuroschemax[torch]"
+
+Public viewer:
+    https://colab.research.google.com/drive/1oVe9JRJukQ5dQsFH8XoVQj6b1IDpy2MS?usp=sharing
 """
 
 # ── Option 1: Manual architecture spec (no extra dependencies) ──────────────
