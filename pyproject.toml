@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "neuroschemax"
-version = "0.1.1"
+version = "0.1.2"
 description = "Neural network architecture visualization & export toolkit, powered by NN-SVG."
 readme = "README.md"
 requires-python = ">=3.11"
