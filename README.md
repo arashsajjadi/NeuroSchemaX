@@ -4,44 +4,56 @@
 
 NeuroSchemaX parses neural-network models (ONNX, PyTorch, TensorFlow, or
 hand-written JSON/YAML specs), normalises them into a semantic representation,
-and renders them using the real NN-SVG JavaScript engine — producing standalone
-HTML and clean SVG diagrams suitable for papers, theses, READMEs, and
-documentation.
+and renders them using the NN-SVG JavaScript engine — producing standalone
+HTML and SVG diagrams suitable for papers, theses, READMEs, and documentation.
+
+**Best-supported targets:** MLP/FCNN and sequential CNN-style architectures
+(LeNet-style, AlexNet/VGG-style).  ResNet, U-Net, Transformer, and other
+complex graph structures are rendered as honest approximate summaries; exact
+topology cannot be drawn for architectures that fall outside the three
+sequential NN-SVG families.
 
 [nnsvg]: https://github.com/alexlenail/NN-SVG
 
 ---
 
-## What it is
+## What it does
 
-NeuroSchemaX is a Python toolkit that turns neural-network model files into
-publication-quality architecture diagrams.  It does three things:
-
-1. **Parse** — reads ONNX, PyTorch, Keras, JSON, or YAML and understands
-   the layer structure.
-2. **Analyse** — detects layer types, skip connections, and block groupings,
-   then recommends the best diagram style automatically.
-3. **Render** — produces standalone HTML (self-contained, works offline) or
-   SVG (via headless Chromium), plus several JSON export formats.
-
-## Why it exists
-
-NN-SVG is the standard tool used in hundreds of deep-learning papers, but it
-requires manual data entry through a web UI.  NeuroSchemaX automates that:
-point it at a model file and get a diagram in one command.
-
-## Who should use it
-
-- Researchers who need architecture diagrams for papers or theses
-- Engineers documenting models in READMEs
-- Anyone who wants consistent, reproducible diagrams from real model files
+1. **Parse** — reads ONNX, PyTorch, Keras, JSON, or YAML and understands the layer structure.
+2. **Analyse** — detects layer types, skip connections, and block groupings, then recommends the best diagram style.
+3. **Render** — produces standalone offline HTML or SVG (via headless Chromium), plus JSON export formats.
 
 ---
 
-## Good defaults and output quality
+## Installation
 
-NeuroSchemaX is designed to produce useful, readable diagrams without manual
-tuning.  Point it at a model file and get a clean result:
+Install from PyPI:
+
+```bash
+pip install neuroschemax
+```
+
+Install from GitHub:
+
+```bash
+pip install git+https://github.com/arashsajjadi/NeuroSchemaX.git
+```
+
+Optional extras:
+
+```bash
+pip install "neuroschemax[svg]"    # SVG export (requires headless Chromium)
+playwright install chromium
+
+pip install "neuroschemax[torch]"  # PyTorch model input
+pip install "neuroschemax[tf]"     # TensorFlow / Keras model input
+pip install "neuroschemax[dev]"    # tests and linter
+pip install "neuroschemax[all]"    # everything
+```
+
+---
+
+## Quickstart
 
 ```python
 import neuroschemax as nsx
@@ -54,165 +66,7 @@ nsx.savefig("architecture.html")
 neuroschemax draw model.onnx
 ```
 
-What you get without any options:
-
-- **Automatic style selection** — NeuroSchemaX inspects the model and picks
-  the best NN-SVG diagram family (FCNN for MLPs, LeNet for small CNNs,
-  AlexNet for deeper CNNs).
-- **Operation-aware labels** — layers are labeled with their operation type
-  and key parameters: `Conv 64 k3`, `Dense 128`, `GAP`, `MaxP k2 s2`,
-  `[MH-Attn]`.  The last dense layer is labeled `Output N` (MLP) or
-  `Classifier N` (CNN), where `N` is the true semantic unit count even when
-  the visual node count is capped for readability.
-- **Activation and supporting-op fusion** — a ReLU/GeLU immediately following
-  a major layer is fused into the label as `+ReLU`/`+GeLU`.  BatchNorm,
-  LayerNorm, GroupNorm and Dropout are surfaced as inline badges
-  (`+BN`, `+LN`, `+Drop 0.5`) instead of taking their own visual columns.
-  Fusing keeps Dropout/Norm visible without crowding the diagram; the full
-  layer remains in `export-debug-json`.
-- **Multi-line label wrapping (no `…` truncation)** — when a decorated label
-  is wider than its slot, the renderer wraps it onto multiple lines on
-  whitespace and `+badge` boundaries.  Important tokens (`ReLU`, `+Drop 0.5`,
-  `k3`, `s2`, `1000 classes`, `12 heads`, `d=768`) are never cut mid-token.
-- **Auto canvas widening** — if any label is genuinely wider than its slot,
-  the canvas grows to fit it instead of clipping or overlapping. Tiny
-  models render with reduced vertical margins so they fill the canvas.
-- **Diagram subtitle** — every rendered HTML includes a subtitle that shows
-  the render family, fidelity, original layer count, and visual stage count
-  when they differ: `FCNN · exact · 6 layers · 4 visual stages`.
-- **Sensible canvas size** — the canvas expands automatically so layers are
-  never crowded, even for deep networks.
-- **Summary mode for large models** — deep CNNs are automatically grouped into
-  meaningful conv blocks with per-block metadata:
-  `Block 1 / 4×Conv k3, 64ch / Pool ↓2`.
-- **Professional themes** — `paper` (clean, minimal), `thesis` (print-ready),
-  `readme` (docs-friendly), `debug` (verbose, all annotations).
-- **Honest warnings** — when a model cannot be rendered exactly (ResNet skip
-  connections, Transformer attention blocks, U-Net branches), an amber badge
-  appears in the HTML explaining what was approximated and where the full
-  graph is preserved.
-- **Offline HTML** — generated HTML files are fully self-contained.  All
-  JavaScript is embedded.  No internet connection or server is needed.
-- **Clean SVG export** — when Playwright/Chromium is installed, SVG output
-  is a proper vector file suitable for papers and presentations.
-- **Debug and metadata exports** — for complex models, `export-debug-json`
-  preserves the complete layer graph, skip connections, and warnings.
-
-### Example outputs
-
-| Model | Diagram family | Fidelity |
-|---|---|---|
-| `examples/tiny_mlp_to_html.py` | FCNN | Exact |
-| `examples/tiny_cnn_to_svg.py` | LeNet | Exact |
-| `examples/resnet_like.py` | AlexNet backbone (approximate) | Sequential; skip links in debug JSON |
-| `examples/transformer_like.py` | Block-level sequence (approximate) | Attention blocks not drawn; full layers in debug JSON |
-
----
-
-## Installation
-
-Base (HTML output, ONNX and YAML input):
-
-```bash
-pip install neuroschemax
-```
-
-With SVG export (requires headless Chromium):
-
-```bash
-pip install "neuroschemax[svg]"
-playwright install chromium
-```
-
-With PyTorch model input:
-
-```bash
-pip install "neuroschemax[torch]"
-```
-
-With TensorFlow/Keras model input:
-
-```bash
-pip install "neuroschemax[tf]"
-```
-
-Development (tests + linter):
-
-```bash
-pip install "neuroschemax[dev]"
-```
-
-Everything at once:
-
-```bash
-pip install "neuroschemax[all]"
-playwright install chromium
-```
-
----
-
-## Quickstart (30 seconds)
-
-### Python — simplified API
-
-```python
-import neuroschemax as nsx
-
-nsx.draw("model.onnx")
-nsx.savefig("diagram.html")     # format inferred from extension
-```
-
-Open `diagram.html` in any browser.
-
-### Python — figure object
-
-```python
-fig = nsx.figure(width=1400, height=700, theme="paper")
-fig.draw("model.onnx")
-fig.savefig("diagram.svg")
-fig.export_debug_json("debug.json")
-```
-
-### Python — explicit functional API
-
-```python
-import neuroschemax as nsx
-
-arch = nsx.parse_model("model.onnx")
-print(nsx.summarize_model(arch))
-
-nsx.save_network_html("model.html", arch, theme="paper")
-nsx.save_network_svg("model.svg",  arch, theme="paper")   # needs Playwright
-
-spec = nsx.build_nnsvg_spec(arch, style="lenet", width=1400, height=600)
-nsx.save_nnsvg_spec("model.nnsvg.json", spec)
-```
-
-### CLI
-
-```bash
-# User-friendly draw command (output defaults to <model>.html)
-neuroschemax draw model.onnx
-neuroschemax draw model.onnx -o diagram.html --theme paper
-
-# Full control
-neuroschemax render model.onnx -o diagram.html --theme thesis --width 1600
-neuroschemax render model.onnx -o diagram.svg  --theme paper
-
-# Inspect and summarise
-neuroschemax inspect        model.onnx
-neuroschemax summarize      model.onnx
-neuroschemax summarize      model.onnx --format markdown
-neuroschemax recommend-view model.onnx
-
-# JSON exports
-neuroschemax export-paper-json model.onnx -o model.paper.json
-neuroschemax export-debug-json model.onnx -o model.debug.json
-neuroschemax export-nnsvg      model.onnx -o model.nnsvg.json
-
-# Environment diagnostics
-neuroschemax doctor
-```
+Open the generated HTML in any browser — no internet connection required.
 
 ---
 
@@ -220,17 +74,15 @@ neuroschemax doctor
 
 ### Simplified stateful API
 
-Stores the last parsed architecture internally so you don't repeat the source.
-
 ```python
 import neuroschemax as nsx
 
-nsx.draw("model.onnx")            # parse and stash
-nsx.savefig("diagram.html")       # use stashed arch
-nsx.save_html("out.html")         # also HTML
-nsx.show()                        # open in browser (inline in Jupyter)
+nsx.draw("model.onnx")        # parse and stash
+nsx.savefig("diagram.html")   # use stashed arch — format inferred from extension
+nsx.save_html("out.html")     # also HTML
+nsx.show()                    # open in browser (inline in Jupyter)
 
-# Or pass source directly (no stash needed)
+# Or pass source directly
 nsx.save_html("out.html", "model.onnx")
 ```
 
@@ -238,22 +90,17 @@ nsx.save_html("out.html", "model.onnx")
 
 ```python
 fig = nsx.figure(width=1400, height=700, theme="paper")
-
-# Matplotlib-style sizing: figsize=(inches_wide, inches_tall), dpi=pixels_per_inch
-# width = round(figsize[0] * dpi), height = round(figsize[1] * dpi)
-fig = nsx.figure(figsize=(12, 6), dpi=120, theme="paper")
 fig.draw("model.onnx")
 fig.savefig("diagram.html")
-
-fig = nsx.figure(width=1400, height=700, theme="paper")
-fig.draw("model.onnx")            # returns self for chaining
-fig.savefig("diagram.html")
 fig.save_html("diagram.html")
-fig.save_svg("diagram.svg")
+fig.save_svg("diagram.svg")       # needs Playwright
 fig.show()
 fig.export_debug_json("debug.json")
 fig.export_paper_json("paper.json")
 fig.export_nnsvg_json("spec.json")
+
+# Matplotlib-style sizing
+fig = nsx.figure(figsize=(12, 6), dpi=120, theme="paper")
 
 # Chaining
 nsx.figure().draw("model.onnx").save_html("out.html")
@@ -263,7 +110,6 @@ nsx.figure().draw("model.onnx").save_html("out.html")
 
 ```python
 nsx.parse_model(source)               # SemanticArchitecture
-nsx.parse_graph(source)               # GraphIR
 nsx.summarize_model(source)           # str
 nsx.recommend_view(source)            # dict: family/confidence/is_approximate/reason/warnings
 
@@ -297,114 +143,64 @@ These are accepted by every rendering function and `nsx.figure()`:
 | `title` | `str` | model name | Diagram title shown above the diagram |
 | `show_labels` | `bool` | `True` | Show layer labels |
 | `show_shapes` | `bool` | `True` | Show shape dimensions in labels |
-| `compact` | `bool` | `False` | Use compact layout (reduces spacing) |
+| `compact` | `bool` | `False` | Use compact layout (tighter per-layer budget) |
 | `label_mode` | `str` | `"auto"` | `"auto"`, `"name"`, `"compact"`, `"shape"`, `"full"` |
 | `detail_level` | `str` | `"auto"` | `"auto"`, `"summary"`, `"full"` |
 | `show_activations` | `bool` | `True` | Fuse activation names into preceding layer labels |
 | `transformer_mode` | `str` | `"block_summary"` | `"block_summary"` or `"unsupported"` |
 | `approximate_mode` | `str` | `"warn"` | `"warn"`, `"error"`, or `"allow"` |
 
-**`label_mode`** controls what each layer label shows:
-- `auto` — operation-aware compact labels for small models (`Conv 64 k3`, `Dense 128`);
-  name-only for large models
+**`label_mode`:**
+- `auto` — compact labels for small models; name-only for large models
 - `name` — layer name only (shortest; never overlaps)
-- `compact` — operation type + key parameters: `Conv 64 k3`, `MaxP k2 s2`, `Dense 128`,
-  `GAP`, `Input 28x28`, `[MH-Attn]`
+- `compact` — operation type + key parameters: `Conv 64 k3`, `MaxP k2 s2`, `Dense 128`, `GAP`
 - `shape` — shape only, no name
-- `full` — layer name + complete shape string (may overlap for large models)
+- `full` — layer name + complete shape string; may be wide for large models
 
-Activations immediately following a layer are fused into the label when
-`show_activations=True`: `Conv 64 k3 +ReLU`, `Dense 128 +GeLU`.
-The last dense layer in any diagram is labeled `Output N` (MLP) or `Classifier` (CNN).
+Activations following a layer are fused into the label when `show_activations=True`:
+`Conv 64 k3 +ReLU`, `Dense 128 +GeLU`.  BatchNorm, LayerNorm, and Dropout appear as
+inline badges: `+BN`, `+LN`, `+Drop 0.5`.
 
-**`detail_level`** controls how many layers are shown:
-- `auto` — all layers for small models; grouped blocks for models with more than 12
-  spec layers
-- `summary` — groups conv/pool sequences into blocks with metadata, e.g.
-  `Block 2 / 4×Conv k3, 128ch / Pool ↓2`.
-  ResNet → `Stem / Residual Block N (+skip collapsed) / Head`.
-  U-Net → `Encoder / Bottleneck / Decoder / Output`.
-- `full` — every individual layer shown
+**`detail_level`:**
+- `auto` — all layers for small models; grouped blocks for models with more than 12 spec layers
+- `summary` — groups conv/pool sequences into named blocks with metadata, e.g. `Block 2 / 4×Conv k3, 128ch / Pool ↓2`
+- `full` — every individual layer shown; intended for inspection and debugging, not screenshots
 
-**`transformer_mode`** controls Transformer/attention/recurrent rendering:
-- `block_summary` — renders a sequence of labeled rectangular blocks:
-  `Tokens/Input → Embedding → [MH-Attn] / Add & Norm → [FFN] / Add & Norm → [Head] / N classes`.
-  Positional-encoding `Add` layers before the first attention block are labeled
-  `Positional Encoding`.  When `num_heads` / `d_model` are present on the
-  attention layer they appear inside the block label as `12 heads`, `d=768`,
-  `FFN 3072`.
-  This is a **block-level approximation, not exact Transformer rendering**.
-  Q/K/V projections, individual heads, exact residual paths,
-  positional-encoding internals, and exact tensor flow are not drawn.
-- `unsupported` — renders a structured **HTML diagnostic card** (not an SVG
-  box) that identifies the detected operation types (Embedding, Attention,
-  Dense/FFN, Norm) and directs the user to `block_summary` mode or the
-  debug JSON export.  The card is laid out in HTML, so multi-line content
-  flows naturally without overflow at any canvas width.
+**`transformer_mode`:**
+- `block_summary` — approximate conceptual block sequence: `Tokens/Input → Embedding → [MH-Attn] / Add & Norm → [FFN] / Add & Norm → [Head]`.  This is **not** exact Transformer rendering.  Q/K/V projections, individual heads, exact residual paths, and tensor flow are not drawn.
+- `unsupported` — renders a structured HTML diagnostic card instead of a diagram, listing detected components and suggesting `block_summary` or debug JSON
 
-**`approximate_mode`** controls how approximate renderings are handled:
+**`approximate_mode`:**
 - `warn` — amber warning badge shown in HTML (default)
 - `error` — raises `RenderError` before rendering an approximate diagram
-- `allow` — suppresses warning badges (silent approximation)
+- `allow` — suppresses warning badges
 
 ---
 
-## CLI examples with all commands
+## CLI
 
 ```bash
-# Minimal
+# Draw (output defaults to <model>.html)
 neuroschemax draw model.onnx
+neuroschemax draw model.onnx -o diagram.html --theme paper
 
-# Full render with all options
-neuroschemax render model.onnx -o out.html \
-    --theme paper --style lenet \
-    --width 1400 --height 700 \
-    --title "My CNN" \
-    --no-labels --no-shapes --compact
+# Render with full options
+neuroschemax render model.onnx -o diagram.html --theme thesis --width 1600
+neuroschemax render model.onnx -o diagram.svg
 
-# From a YAML spec
-neuroschemax draw spec.yaml -o diagram.html
+# Inspect and summarise
+neuroschemax inspect        model.onnx
+neuroschemax summarize      model.onnx
+neuroschemax summarize      model.onnx --format markdown
+neuroschemax recommend-view model.onnx
 
-# From a JSON spec
-neuroschemax draw spec.json -o diagram.html
+# JSON exports
+neuroschemax export-paper-json model.onnx -o model.paper.json
+neuroschemax export-debug-json model.onnx -o model.debug.json
+neuroschemax export-nnsvg      model.onnx -o model.nnsvg.json
 
-# Environment check
+# Environment diagnostics
 neuroschemax doctor
-```
-
----
-
-## Local folder usage
-
-Working with a local model file:
-
-```bash
-# Current directory
-neuroschemax draw ./my_model.onnx
-
-# Another directory
-neuroschemax draw /path/to/models/resnet.onnx -o /path/to/output/resnet.html
-```
-
-Using a YAML spec (no model file needed):
-
-```yaml
-# model.yaml
-model_name: my_mlp
-layers:
-  - name: input
-    kind: input
-    shape: [1, 784]
-  - name: fc1
-    kind: dense
-    units: 256
-  - name: out
-    kind: dense
-    units: 10
-```
-
-```bash
-neuroschemax draw model.yaml
 ```
 
 ---
@@ -421,8 +217,6 @@ neuroschemax draw model.yaml
 | `tf.keras.Model` | Requires `pip install tensorflow` |
 | `onnx.ModelProto` | Pre-loaded ONNX object |
 
----
-
 ## Supported outputs
 
 | Format | API | CLI |
@@ -437,29 +231,40 @@ neuroschemax draw model.yaml
 
 ---
 
-## Themes and styles
+## Diagram families and fidelity
 
-Themes set the overall look; styles set the NN-SVG diagram family.
+NN-SVG supports three sequential diagram families.  NeuroSchemaX selects the
+best fit automatically based on the model structure.
 
-```python
-# Themes
-nsx.save_network_html("out.html", model, theme="paper")    # clean, minimal
-nsx.save_network_html("out.html", model, theme="thesis")   # print-ready
-nsx.save_network_html("out.html", model, theme="debug")    # verbose, all labels
-nsx.save_network_html("out.html", model, theme="readme")   # dark background
+| Architecture | Rendered as | Fidelity | What is preserved |
+|---|---|---|---|
+| MLP / dense network | FCNN neuron columns | **Exact** | — |
+| Small CNN (≤ 3 convs) | LeNet feature maps | **Exact** | — |
+| VGG-style deep CNN | AlexNet feature maps | **Exact** | — |
+| ResNet / residual blocks | Block summary (skip collapsed) | **Approximate** | Skip links in debug JSON |
+| U-Net / encoder-decoder | Block summary (concat collapsed) | **Approximate** | Decoder branches in debug JSON |
+| Transformer / attention | Conceptual block sequence | **Approximate** | All layers in debug JSON |
+| LSTM / GRU / RNN | Block sequence | **Approximate** | All layers in debug JSON |
+| Arbitrary DAG | Not supported | — | Full graph in debug JSON |
 
-# Styles (override auto-detection)
-nsx.save_network_html("out.html", model, style="fcnn")     # MLP / dense
-nsx.save_network_html("out.html", model, style="lenet")    # small CNN
-nsx.save_network_html("out.html", model, style="alexnet")  # deep CNN
-```
+NeuroSchemaX does not claim to render arbitrary DAGs, exact ResNet skip edges,
+exact U-Net encoder-decoder skip topology, or exact Transformer attention flow.
+Models that fall outside the three sequential families are shown as honest
+approximate summaries with clear on-diagram markers (`+skip collapsed`,
+`concat collapsed`) and amber warning badges in the HTML.
+
+ResNet summary: `Stem → Residual Block N (n×Conv k3, Cch, +skip collapsed) → Head / Classifier`
+
+U-Net summary: `Encoder → Bottleneck → Decoder (concat collapsed) → Segmentation Head`
+
+Transformer block summary: `Tokens/Input → Embedding → [MH-Attn] / Add & Norm → [FFN] / Add & Norm → [Head]`
+
+The complete layer graph (every Add/Concat/Upsample with attributes) is
+preserved in `export-debug-json` regardless of what is shown visually.
 
 ---
 
 ## How architecture recommendation works
-
-`recommend_view()` analyses the parsed architecture and returns the best
-NN-SVG family with a `confidence` level and a human-readable `reason`:
 
 ```python
 info = nsx.recommend_view("model.onnx")
@@ -473,92 +278,27 @@ info = nsx.recommend_view("model.onnx")
 # }
 ```
 
-Rules (in priority order):
-- Attention layers detected → **block-level LeNet view** (LOW confidence, `is_approximate=True`, warning)
-- Recurrent layers (LSTM/GRU) detected → **block-level LeNet view** (LOW confidence, warning)
-- No conv layers, at least one dense layer → **FCNN** (HIGH confidence)
-- 1–3 conv layers → **LeNet** (HIGH; MEDIUM with skip/merge warning if Add/Concat present)
-- 4+ conv layers → **AlexNet** (HIGH; MEDIUM if Add/Concat skip connections present)
-
-`is_approximate` is `True` whenever `confidence` is not `"high"` or there are warnings.
-Skip connections are detected from both ONNX graph edges and explicit Add/Concat layers
-in manual specs.
-
-Notes:
-- The `family` field in `recommend_view()` reflects the semantic architecture type,
-  not the rendering family.  Transformers (`"fcnn"` semantically) are rendered using
-  the LeNet renderer (rect blocks) when `transformer_mode="block_summary"`.
-- Use `transformer_mode="unsupported"` to get a professional diagnostic page
-  instead of the block summary.
-- The block summary is honest: labels identify the operation type; Q/K/V flows,
-  residual paths, and repeated-block topology are not drawn.
-
----
-
-## Limitations
-
-NN-SVG supports three diagram families: FCNN, LeNet, and AlexNet.  All are
-sequential left-to-right layouts.  NeuroSchemaX does not claim to render
-arbitrary DAGs — models that fall outside these three families are shown as
-an honest approximation of the sequential backbone, with a clear on-diagram
-warning.
-
-| Architecture | How it appears | Visual fidelity | What is preserved |
-|---|---|---|---|
-| MLP / dense network | FCNN neuron columns | **Exact** | — |
-| Small CNN (≤ 3 convs) | LeNet feature maps | **Exact** | — |
-| VGG-style deep CNN | AlexNet feature maps | **Exact** | — |
-| ResNet / residual blocks | AlexNet backbone or block summary | **Approximate** | Skip links in debug JSON |
-| U-Net / encoder-decoder | AlexNet backbone or block summary | **Approximate** | Decoder branches in debug JSON |
-| Transformer / attention | Block-level sequence* | **Approximate** | All layers in debug JSON |
-| LSTM / GRU / RNN | Block-level sequence* | **Approximate** | All layers in debug JSON |
-| Object-detection head | AlexNet backbone | **Approximate** | Detection branches in debug JSON |
-
-*Transformer and recurrent architectures are shown as a sequence of labeled
-rectangular blocks rendered via the LeNet rectangle renderer:
-
-```
-Tokens/Input → Embedding → PosEnc (if present)
-→ [MH-Attn] / Add & Norm → [FFN] / Add & Norm → … → [Head] / Classifier
-```
-
-This is a block-level approximation of the computation sequence.  It is
-**not** an exact Transformer diagram.  NN-SVG has no native Transformer,
-U-Net, or ResNet renderer.  Q/K/V projections, individual attention heads,
-exact residual paths, positional-encoding internals, and tensor flow are
-not drawn.
-
-With `detail_level="summary"`, ResNet architectures are shown as:
-`Stem → Residual Block N (n×Conv k3, Cch, +skip collapsed) → … → Head / Classifier`
-and U-Net architectures as:
-`Encoder (conv stages, Pool ↓2, skip→debug JSON) → Bottleneck → Decoder (Upsample ×2, conv stages, concat collapsed) → Segmentation Head`
-
-These summaries are honest approximations: skip and concat links are not
-drawn, but the labels make it explicit that they have been collapsed.  The
-exact graph (every Add/Concat/Upsample with attributes) is preserved in
-`export-debug-json`.
-
-Every approximate rendering:
-- shows an amber warning badge in the HTML explaining what was simplified
-- reports `confidence: "medium"` or `"low"` and `is_approximate: true` in `recommend_view()`
-- preserves the complete layer and edge information in `export-debug-json`
-
-Use `export-debug-json` when you need the exact graph structure.
+Selection rules (in priority order):
+- Attention layers → **block-level LeNet view** (LOW confidence, `is_approximate=True`)
+- Recurrent layers (LSTM/GRU) → **block-level LeNet view** (LOW confidence)
+- No convolutions, at least one dense layer → **FCNN** (HIGH confidence)
+- 1–3 conv layers → **LeNet** (HIGH; MEDIUM with skip/merge warning)
+- 4+ conv layers → **AlexNet** (HIGH; MEDIUM if skip connections present)
 
 ---
 
 ## Troubleshooting
 
-Run `neuroschemax doctor` first.  It prints a pass/fail summary.
+Run `neuroschemax doctor` first.
 
-**SVG export fails:** Install Playwright and Chromium:
+**SVG export fails:**
 
 ```bash
 pip install playwright
 playwright install chromium
 ```
 
-**Missing assets:** Reinstall:
+**Missing assets:**
 
 ```bash
 pip install --force-reinstall neuroschemax
@@ -577,38 +317,33 @@ See [docs/troubleshooting.md](docs/troubleshooting.md) for more.
 Yes. Generated HTML files are fully self-contained — all JS is embedded.
 
 **Q: Can I use it in a Jupyter notebook?**
-Yes. `nsx.show()` and `fig.show()` detect whether they are running inside a
-Jupyter or IPython kernel automatically.  Inside a notebook the diagram is
-displayed **inline** using `IPython.display`.  Outside a notebook the same
-call opens the rendered HTML in your default web browser.  IPython is not a
-required dependency — it is imported lazily and the browser fallback is used
-if it is unavailable.
+Yes. `nsx.show()` and `fig.show()` detect the runtime automatically.  Inside
+Jupyter the diagram is displayed inline; outside, it opens in the browser.
 
 **Q: Does it support ONNX opset X?**
-It reads the graph topology and layer attributes regardless of opset version.
-Unsupported op types are normalised to `LayerKind.UNKNOWN` and included with
-LOW confidence.
+It reads graph topology and layer attributes regardless of opset version.
+Unsupported op types are normalised to `LayerKind.UNKNOWN`.
 
 **Q: Can I customise the diagram further?**
-You can override any rendering option via kwargs.  For pixel-level control,
-export the NN-SVG JSON spec and load it in the [NN-SVG web app][nnsvg].
+Override any rendering option via kwargs.  For pixel-level control, export the
+NN-SVG JSON spec and load it in the [NN-SVG web app][nnsvg].
 
 **Q: Why is confidence MEDIUM/LOW?**
-A model has features that don't map perfectly to the chosen NN-SVG family.
+The model has features that don't map perfectly to the chosen NN-SVG family.
 The diagram is still generated; read the `warnings` for specifics.
 
 **Q: Why does the diagram show fewer layers than my model has?**
-By default (`detail_level="auto"`), large models are grouped into conv/pool
-blocks to keep the diagram readable.  Each block label shows what it contains:
-`Block 2 / 4×Conv k3, 128ch / Pool ↓2`.  Pass `detail_level="full"` to see
-every individual layer.
+Large models are grouped into conv/pool blocks by default (`detail_level="auto"`).
+Pass `detail_level="full"` to see every individual layer.  Note that full mode
+is intended for inspection; for screenshots, `detail_level="summary"` or the
+default produces more readable output.
 
 ---
 
-## Development setup
+## Development
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/arashsajjadi/NeuroSchemaX.git
 cd NeuroSchemaX
 pip install -e ".[dev]"
 pytest tests/ -v
@@ -619,16 +354,11 @@ See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ---
 
-## Publishing checklist
+## Author
 
-- [ ] Bump version in `src/neuroschemax/version.py`
-- [ ] Update `CHANGELOG.md`
-- [ ] All tests pass: `pytest tests/ -v`
-- [ ] No linter errors: `ruff check src/ tests/`
-- [ ] `python -m build` succeeds
-- [ ] Test on TestPyPI, then publish
+**Arash Sajjadi** — maintainer and author.
 
-See [docs/packaging.md](docs/packaging.md).
+GitHub: [arashsajjadi/NeuroSchemaX](https://github.com/arashsajjadi/NeuroSchemaX)
 
 ---
 
