@@ -88,28 +88,27 @@ fig.draw({"model_name": "mlp", "layers": [
 fig  # renders inline in Jupyter; opens browser outside
 ```
 
-For **Google Colab**, inline rendering is limited.  The recommended workflow
-is to save the HTML and download it:
+`nsx.show()` and `fig.show()` detect the runtime environment:
+
+- **Jupyter / JupyterLab** — renders inline via `IPython.display.HTML`.
+  Full JavaScript interactivity works.
+- **Google Colab** — renders inline via `IPython.display.HTML`.  Colab's
+  content-security policy may limit JavaScript, so diagrams display but
+  interactions may be restricted.  For the fully interactive version:
 
 ```python
 fig.save_html("diagram.html")
-# Then: Files panel → right-click diagram.html → Download
-# Open the downloaded file in Chrome/Firefox for full interactivity.
+# Files panel → right-click diagram.html → Download → open in Chrome/Firefox
 ```
 
-`fig.to_html()` returns the self-contained HTML string if you need it inline:
+- **Script / terminal** — saves to a temp file and opens in the browser.
+
+`fig.to_html()` returns the self-contained HTML string for manual display:
 
 ```python
 from IPython.display import HTML, display
 display(HTML(fig.to_html()))
 ```
-
-`nsx.show()` and `fig.show()` detect the runtime environment:
-
-- **Jupyter / JupyterLab** — renders inline via `IPython.display.HTML`.
-- **Google Colab** — saves to a temp file and shows an IFrame preview with a
-  download prompt; full rendering requires the downloaded HTML file.
-- **Script / terminal** — saves to a temp file and opens in the browser.
 
 ## Next steps
 

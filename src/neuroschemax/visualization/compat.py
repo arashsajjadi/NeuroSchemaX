@@ -136,11 +136,11 @@ def environment_summary() -> dict[str, object]:
     tf_ok = check_tensorflow()
     yaml_ok = check_yaml()
 
-    try:
-        import ipython  # type: ignore[import]  # noqa: F401
-        ipython_ok = True
-    except ImportError:
-        ipython_ok = False
+    # Test the actual display API, not just the package name.
+    # ``import ipython`` (lowercase) may fail even when the display API is
+    # available (Colab installs IPython without registering the lowercase name).
+    from .._display import _can_display_html
+    ipython_ok = _can_display_html()
 
     messages: list[str] = []
     all_assets_ok = all(assets.values())

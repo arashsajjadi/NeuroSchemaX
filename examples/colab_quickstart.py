@@ -29,16 +29,17 @@ mlp_spec = {
 fig = nsx.figure(theme="paper")
 fig.draw(mlp_spec)
 
-# Save to a file (recommended in Colab — download and open in browser).
-fig.save_html("my_mlp.html")
-print("Saved: my_mlp.html  →  use Files panel to download, then open in Chrome/Firefox.")
+# Inline preview: works in Colab and Jupyter.
+# Colab may restrict JavaScript interactivity; the HTML content still renders.
+fig.show()
+# In Colab you will also see a short note about downloading for full interactivity.
 
-# Inline preview (limited in Colab; full diagram in the downloaded file).
-# Uncomment to try the inline preview:
-# fig.show()
+# For the fully interactive diagram, save and download:
+fig.save_html("my_mlp.html")
+print("Saved: my_mlp.html  →  Files panel → right-click → Download → open in Chrome.")
 
 # _repr_html_ hook: if fig is the last expression in a Jupyter cell,
-# the diagram renders inline automatically (works in local Jupyter):
+# the diagram renders inline automatically:
 # fig
 
 

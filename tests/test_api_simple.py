@@ -521,3 +521,194 @@ def test_doctor_dependencies_has_ipython_key():
 def test_version_is_0_1_1():
     from neuroschemax.version import __version__
     assert __version__ == "0.1.1"
+
+
+# ---------------------------------------------------------------------------
+# Notebook/IPython detection fixes
+# ---------------------------------------------------------------------------
+
+def test_can_display_html_uses_ipython_display_api():
+    """_can_display_html() returns True when IPython.display.HTML/display import works."""
+    from neuroschemax._display import _can_display_html
+    # In this test environment IPython is installed, so this must be True.
+    try:
+        from IPython.display import HTML, display  # type: ignore[import]  # noqa: F401
+        expected = True
+    except ImportError:
+        expected = False
+    assert _can_display_html() == expected
+
+
+def test_doctor_notebook_display_matches_can_display_html():
+    """doctor() notebook_display must agree with _can_display_html()."""
+    from neuroschemax._display import _can_display_html
+    result = nsx.doctor()
+    assert result["capabilities"]["notebook_display"] == _can_display_html()
+
+
+def test_doctor_ipython_key_matches_can_display_html():
+    """doctor() dependencies['ipython'] must agree with _can_display_html()."""
+    from neuroschemax._display import _can_display_html
+    result = nsx.doctor()
+    assert result["dependencies"]["ipython"] == _can_display_html()
+
+
+def test_can_display_html_does_not_use_lowercase_ipython_import():
+    """_can_display_html() must not rely on 'import ipython' (lowercase)."""
+    # Simulate the case where the lowercase 'ipython' package cannot be imported
+    # but IPython.display IS available — the canonical Colab/Jupyter situation.
+    import builtins
+    real_import = builtins.__import__
+
+    def block_lowercase(name: str, *args, **kwargs):
+        if name == "ipython":            # block only the lowercase bare name
+            raise ImportError("no lowercase ipython")
+        return real_import(name, *args, **kwargs)
+
+    with patch("builtins.__import__", side_effect=block_lowercase):
+        from neuroschemax._display import _can_display_html
+        # Must still return True because IPython.display is reachable
+        try:
+            from IPython.display import HTML, display  # type: ignore  # noqa: F401
+            ipython_available = True
+        except ImportError:
+            ipython_available = False
+
+        result = _can_display_html()
+        assert result == ipython_available, (
+            "_can_display_html() should not fail just because 'import ipython' (lowercase) fails"
+        )
+
+
+# ---------------------------------------------------------------------------
+# show() / to_html() — notebook paths
+# ---------------------------------------------------------------------------
+
+def test_show_html_in_jupyter_calls_display_not_browser():
+    """In Jupyter mode, show_html must call IPython.display.display, not webbrowser."""
+    try:
+        from IPython.display import HTML, display  # type: ignore[import]  # noqa: F401
+    except ImportError:
+        pytest.skip("IPython not installed")
+
+    from neuroschemax._display import show_html
+    with patch("neuroschemax._display._in_jupyter", return_value=True), \
+         patch("neuroschemax._display._in_colab", return_value=False), \
+         patch("neuroschemax._display._can_display_html", return_value=True), \
+         patch("IPython.display.display") as mock_disp, \
+         patch("IPython.display.HTML", side_effect=lambda h: h), \
+         patch("webbrowser.open") as mock_browser:
+        show_html("<html><body>hello</body></html>")
+        assert mock_disp.called, "display() must be called in Jupyter mode"
+        assert not mock_browser.called, "webbrowser must NOT be opened in Jupyter mode"
+
+
+def test_show_html_in_colab_calls_display_not_iframe_file(tmp_path: Path):
+    """In Colab mode, show_html must not produce a local-file IFrame."""
+    try:
+        from IPython.display import HTML, display  # type: ignore[import]  # noqa: F401
+    except ImportError:
+        pytest.skip("IPython not installed")
+
+    from neuroschemax._display import show_html
+    displayed_objects = []
+
+    def capture_display(obj):
+        displayed_objects.append(obj)
+
+    with patch("neuroschemax._display._in_jupyter", return_value=True), \
+         patch("neuroschemax._display._in_colab", return_value=True), \
+         patch("neuroschemax._display._can_display_html", return_value=True), \
+         patch("IPython.display.display", side_effect=capture_display), \
+         patch("IPython.display.HTML", side_effect=lambda h: ("HTML", h)), \
+         patch("webbrowser.open") as mock_browser:
+        show_html("<html><body>colab test</body></html>")
+        assert not mock_browser.called, "webbrowser must not open in Colab mode"
+        # Must have called display() with the HTML content
+        assert len(displayed_objects) > 0, "display() must be called in Colab mode"
+        # Must NOT have passed a local /tmp/ file path to display()
+        for obj in displayed_objects:
+            obj_str = str(obj)
+            assert "/tmp/" not in obj_str, (
+                "Colab display must not use a local /tmp/ file path IFrame"
+            )
+
+
+def test_figure_show_manual_spec_no_tmp_file_in_notebook():
+    """fig.show() with manual spec must not use local temp-file IFrame in notebook mode."""
+    try:
+        from IPython.display import HTML, display  # type: ignore[import]  # noqa: F401
+    except ImportError:
+        pytest.skip("IPython not installed")
+
+    spec = {
+        "model_name": "test_mlp",
+        "layers": [
+            {"name": "input", "kind": "input", "shape": [1, 784]},
+            {"name": "fc1",   "kind": "dense", "units": 10},
+        ],
+    }
+    fig = nsx.Figure()
+    fig.draw(spec)
+    displayed: list = []
+
+    with patch("neuroschemax._display._in_jupyter", return_value=True), \
+         patch("neuroschemax._display._in_colab", return_value=True), \
+         patch("neuroschemax._display._can_display_html", return_value=True), \
+         patch("IPython.display.display", side_effect=displayed.append), \
+         patch("IPython.display.HTML", side_effect=lambda h: ("HTML", h)):
+        fig.show()
+
+    assert displayed, "display() must have been called"
+    for obj in displayed:
+        assert "/tmp/" not in str(obj), "Must not display a /tmp/ path"
+
+
+def test_figure_to_html_manual_spec_contains_nnsvg():
+    """fig.to_html() for a manual spec must contain NN-SVG rendering code."""
+    spec = {
+        "model_name": "test",
+        "layers": [
+            {"name": "input", "kind": "input", "shape": [1, 784]},
+            {"name": "fc1",   "kind": "dense", "units": 10},
+        ],
+    }
+    fig = nsx.Figure()
+    fig.draw(spec)
+    html = fig.to_html()
+    assert "<!DOCTYPE html>" in html
+    assert "renderNNSVG" in html or "renderFCNN" in html
+    assert "test" in html  # model name in title
+
+
+def test_figure_to_html_onnx_model_contains_nnsvg():
+    """fig.to_html() for an ONNX model must contain NN-SVG rendering code."""
+    try:
+        from onnx import TensorProto, helper
+    except ImportError:
+        pytest.skip("onnx not available")
+
+    relu = helper.make_node("Relu", ["x"], ["out"])
+    x    = helper.make_tensor_value_info("x",   TensorProto.FLOAT, [1, 64])
+    out  = helper.make_tensor_value_info("out",  TensorProto.FLOAT, [1, 64])
+    graph = helper.make_graph([relu], "onnx_model", [x], [out])
+    model = helper.make_model(
+        graph, opset_imports=[helper.make_opsetid("", 17)]
+    )
+    model.ir_version = 8
+
+    fig = nsx.Figure()
+    fig.draw(model)
+    html = fig.to_html()
+    assert "<!DOCTYPE html>" in html
+    assert len(html) > 200
+
+
+def test_show_html_outside_notebook_opens_browser():
+    """show_html() outside any notebook environment opens the browser."""
+    from neuroschemax._display import show_html
+    with patch("neuroschemax._display._in_jupyter", return_value=False), \
+         patch("neuroschemax._display._in_colab", return_value=False), \
+         patch("webbrowser.open") as mock_browser:
+        show_html("<html><body>browser test</body></html>")
+        assert mock_browser.called

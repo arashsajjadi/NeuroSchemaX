@@ -7,6 +7,21 @@ import webbrowser
 from pathlib import Path
 
 
+def _can_display_html() -> bool:
+    """Return True when IPython.display.HTML / display are importable.
+
+    This is the correct test for notebook-display capability — not whether the
+    *ipython* package (lowercase) can be imported as a module, but whether the
+    actual display API is available.  Colab and Jupyter both satisfy this even
+    when ``import ipython`` (lowercase) would fail.
+    """
+    try:
+        from IPython.display import HTML, display  # type: ignore[import]  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
 def _in_jupyter() -> bool:
     """Return True when running inside a Jupyter / IPython kernel.
 
@@ -15,8 +30,6 @@ def _in_jupyter() -> bool:
     try:
         from IPython import get_ipython  # type: ignore[import]
         shell = get_ipython()
-        # ZMQInteractiveShell (Jupyter/Colab) has a .kernel attribute;
-        # plain terminal InteractiveShell does not.
         return shell is not None and hasattr(shell, "kernel")
     except ImportError:
         return False
@@ -34,57 +47,43 @@ def _in_colab() -> bool:
 def show_html(html: str) -> None:
     """Display *html*:
 
-    - **Colab**: saves a temp file, shows an IFrame preview, and prints a
-      note about downloading for full interactivity.
-    - **Jupyter / JupyterLab**: renders inline via ``IPython.display.HTML``.
-    - **Other environments**: saves to a temp file and opens in the browser.
+    - **Jupyter / JupyterLab / VS Code notebooks**: renders inline via
+      ``IPython.display.HTML``.
+    - **Google Colab**: renders inline via ``IPython.display.HTML``.  Full
+      JavaScript interactivity may be restricted by Colab's content-security
+      policy; call ``fig.save_html("diagram.html")`` and download the file
+      for the fully interactive version.
+    - **Script / terminal**: saves to a temp file and opens in the browser.
 
-    In all cases the HTML is valid and self-contained — save it to a file for
-    the most reliable rendering.
+    The generated HTML is self-contained in all cases — saving to a file
+    always works regardless of display environment.
     """
-    if _in_colab():
-        _show_colab(html)
+    if (_in_jupyter() or _in_colab()) and _can_display_html():
+        _show_inline(html)
         return
-
-    if _in_jupyter():
-        try:
-            from IPython.display import HTML, display  # type: ignore[import]
-            display(HTML(html))
-            return
-        except ImportError:
-            pass
 
     _show_browser(html)
 
 
-def _show_colab(html: str) -> None:
-    """Colab display: save + IFrame + informational message."""
-    try:
-        from IPython.display import IFrame, display  # type: ignore[import]
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".html", delete=False, encoding="utf-8"
-        ) as fh:
-            fh.write(html)
-            tmp = fh.name
-        print(
-            "NeuroSchemaX: diagram saved to temp file.\n"
-            "For full interactivity, download the HTML file and open it in Chrome/Firefox.\n"
-            f"File: {tmp}"
-        )
-        display(IFrame(src=tmp, width=900, height=500))
-        return
-    except Exception:  # noqa: BLE001
-        pass
+def _show_inline(html: str) -> None:
+    """Render *html* inline using ``IPython.display.HTML``.
 
-    # Fallback: raw HTML inline (may strip scripts in some Colab versions)
-    try:
-        from IPython.display import HTML, display  # type: ignore[import]
-        display(HTML(html))
-    except Exception:  # noqa: BLE001
+    In Colab, the browser's content-security policy may suppress JavaScript
+    inside ``display(HTML(...))`` blocks.  We print a brief note when running
+    in Colab so the user knows to download the file for the fully interactive
+    diagram.  We do NOT fall back to a local-file IFrame because Colab's
+    browser sandbox cannot access ``/tmp/`` paths on the VM.
+    """
+    from IPython.display import HTML, display  # type: ignore[import]
+
+    if _in_colab():
         print(
-            "NeuroSchemaX: cannot display inline in this environment.\n"
-            "Use fig.save_html('diagram.html') and download the file."
+            "NeuroSchemaX: showing inline preview.  "
+            "For full JavaScript interactivity, run:\n"
+            "  fig.save_html('diagram.html')  # then download via Files panel"
         )
+
+    display(HTML(html))
 
 
 def _show_browser(html: str) -> None:
